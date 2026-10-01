@@ -4,6 +4,11 @@ const options_parser = @import("options.zig");
 const command_parser = @import("command_parser.zig");
 pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
+pub const failure = @import("failure.zig");
+pub const Failure = failure.Failure;
+pub const ExitCodes = failure.ExitCodes;
+pub const InvocationResult = failure.InvocationResult;
+pub const InvocationAction = failure.Action;
 const diagnostic_errors = @import("diagnostic_errors.zig");
 const option_utils = @import("options/utils.zig");
 pub const theme = @import("theme");
@@ -253,6 +258,8 @@ pub const FieldInfo = struct {
     name: []const u8,
     is_optional: bool,
     is_array: bool,
+    /// Per-argument separator for an explicitly delimited repeatable option.
+    delimiter: ?u8 = null,
     // Metadata for help generation
     short: ?u8 = null,
     description: ?[]const u8 = null,
@@ -852,7 +859,7 @@ pub fn validateMeta(
     }
 
     // Valid top-level meta fields
-    const valid_top_level = .{ "description", "examples", "args", "options", "hidden", "aliases", "exclusive" };
+    const valid_top_level = .{ "description", "examples", "args", "options", "hidden", "aliases", "exclusive", "plugins" };
 
     // Validate top-level fields
     inline for (meta_info.@"struct".fields) |field| {
@@ -865,8 +872,14 @@ pub fn validateMeta(
             break :blk false;
         };
         if (!is_valid) {
-            @compileError(loc ++ "unknown meta field '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden, aliases, exclusive");
+            @compileError(loc ++ "unknown meta field '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden, aliases, exclusive, plugins");
         }
+    }
+
+    // The registry validates plugin names and typed values against its plugin
+    // list. Per-command validation can still reject a malformed container.
+    if (@hasField(MetaType, "plugins") and @typeInfo(@TypeOf(meta.plugins)) != .@"struct") {
+        @compileError(loc ++ "`meta.plugins` must be a struct keyed by plugin_id");
     }
 
     // Validate 'options' metadata if present
@@ -900,7 +913,7 @@ pub fn validateMeta(
             const option_meta_info = @typeInfo(@TypeOf(option_meta));
 
             if (option_meta_info == .@"struct") {
-                const valid_option_fields = .{ "description", "short", "name", "env", "requires", "validate", "complete", "no_config" };
+                const valid_option_fields = .{ "description", "short", "name", "env", "requires", "validate", "complete", "no_config", "delimiter", "stdin" };
 
                 inline for (option_meta_info.@"struct".fields) |opt_field| {
                     const opt_is_valid = comptime blk: {
@@ -912,7 +925,31 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires, validate, complete, no_config");
+                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires, validate, complete, no_config, delimiter, stdin");
+                    }
+                }
+
+                const FieldT = comptime blk: {
+                    for (options_fields) |of| {
+                        if (std.mem.eql(u8, of.name, field.name)) break :blk of.type;
+                    }
+                    unreachable;
+                };
+                if (@hasField(@TypeOf(option_meta), "delimiter")) {
+                    if (!option_utils.isArrayType(FieldT)) {
+                        @compileError(loc ++ "option '" ++ field.name ++ "' declares `delimiter` but is not an array option");
+                    }
+                    const delimiter: u8 = option_meta.delimiter;
+                    if (delimiter == 0 or std.ascii.isWhitespace(delimiter)) {
+                        @compileError(loc ++ "option '" ++ field.name ++ "' delimiter must be a non-whitespace byte");
+                    }
+                }
+                if (@hasField(@TypeOf(option_meta), "stdin")) {
+                    if (@TypeOf(option_meta.stdin) != bool) {
+                        @compileError(loc ++ "option '" ++ field.name ++ "' `stdin` must be a bool");
+                    }
+                    if (option_meta.stdin and FieldT != []const u8 and FieldT != ?[]const u8) {
+                        @compileError(loc ++ "option '" ++ field.name ++ "' enables `stdin` but must have type []const u8 or ?[]const u8");
                     }
                 }
 
@@ -938,12 +975,6 @@ pub fn validateMeta(
                 // with one optional level removed (the hook sees a present value,
                 // never null). Null means valid; a returned string is the reason.
                 if (@hasField(@TypeOf(option_meta), "validate")) {
-                    const FieldT = comptime blk: {
-                        for (options_fields) |of| {
-                            if (std.mem.eql(u8, of.name, field.name)) break :blk of.type;
-                        }
-                        unreachable;
-                    };
                     checkValidateHook(loc, "option", field.name, FieldT, option_meta.validate);
                 }
 

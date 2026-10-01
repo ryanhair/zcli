@@ -96,20 +96,14 @@ pub fn appendToArrayListUnionShort(comptime ElementType: type, allocator: std.me
     }
 }
 
-/// Split a single option token on `,` and append each element, so an
-/// array-typed option accepts `--opt a,b` as shorthand for `--opt a --opt b`.
+/// Split a single option token on the declared delimiter and append each
+/// element. Array values are literal unless the command opts into this syntax.
 /// An empty segment (`a,,b`, `,a`, `a,`) is rejected as an invalid value.
 /// Delegates to `appendToArrayListUnion` per segment, reusing its per-element
 /// parsing and diagnostics unchanged.
 ///
-/// KNOWN LIMITATION (grade6 #316): the comma is an unconditional separator —
-/// there is no escape, so a single string-array element cannot contain a literal
-/// comma. `--label a,b` is always two elements (`a`, `b`), never the one element
-/// `a,b`. If an element must carry a comma, the CSV shorthand cannot express it;
-/// this is an accepted tradeoff of the `--opt a,b` sugar (ADR-0024). Repeated
-/// flags (`--label a --label b`) remain available and are unaffected.
-pub fn appendCsvToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
-    var it = std.mem.splitScalar(u8, value, ',');
+pub fn appendDelimitedToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8, delimiter: u8) !void {
+    var it = std.mem.splitScalar(u8, value, delimiter);
     while (it.next()) |segment| {
         if (segment.len == 0) {
             logging.invalidOptionValue(option_name, value, "value");
@@ -119,9 +113,9 @@ pub fn appendCsvToArrayListUnion(comptime ElementType: type, allocator: std.mem.
     }
 }
 
-/// Comma-splitting append for short options (see `appendCsvToArrayListUnion`).
-pub fn appendCsvToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8) !void {
-    var it = std.mem.splitScalar(u8, value, ',');
+/// Delimited append for short options (see `appendDelimitedToArrayListUnion`).
+pub fn appendDelimitedToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8, delimiter: u8) !void {
+    var it = std.mem.splitScalar(u8, value, delimiter);
     while (it.next()) |segment| {
         if (segment.len == 0) {
             logging.invalidShortOptionValue(char, value, "value");
@@ -129,6 +123,16 @@ pub fn appendCsvToArrayListUnionShort(comptime ElementType: type, allocator: std
         }
         try appendToArrayListUnionShort(ElementType, allocator, list_union, segment, char);
     }
+}
+
+// Compatibility helpers for direct callers. The parser uses the opt-in
+// delimiter metadata and never calls these unconditionally.
+pub fn appendCsvToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
+    return appendDelimitedToArrayListUnion(ElementType, allocator, list_union, value, option_name, ',');
+}
+
+pub fn appendCsvToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8) !void {
+    return appendDelimitedToArrayListUnionShort(ElementType, allocator, list_union, value, char, ',');
 }
 
 /// Generic helper to convert ArrayListUnion to owned slice

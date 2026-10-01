@@ -18,3 +18,7 @@ test {
     _ = @import("registry/compiled.zig");
     _ = @import("registry/tests.zig");
 }
+
+test {
+    _ = @import("registry/invocation_test.zig");
+}

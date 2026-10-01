@@ -175,10 +175,13 @@ pub fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype
         if (field_info.is_required) {
             try buf_fmt.write(" (required)", .{});
         }
-        // Array-typed options accept several values — via `--opt a,b` or by
-        // repeating the flag — so mark them as such at a glance.
+        // Repeated flags preserve each value literally. A declared delimiter
+        // additionally allows several values in one occurrence.
         if (field_info.is_array) {
             try buf_fmt.write(" (repeatable)", .{});
+            if (field_info.delimiter) |delimiter| {
+                try buf_fmt.write(" ({c}-separated)", .{delimiter});
+            }
         }
         if (field_info.requires) |deps| {
             try buf_fmt.write(" (requires ", .{});

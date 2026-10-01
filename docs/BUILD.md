@@ -80,33 +80,13 @@ pub fn handleGlobalOption(
     }
 }
 
-// Lifecycle hook: runs right before the command. Return null to stop execution.
-pub fn preExecute(
-    context: anytype,
-    args: zcli.ParsedArgs,
-) !?zcli.ParsedArgs {
+// Informational requests complete before config loading and validation.
+pub fn handleInformation(context: anytype) !zcli.InvocationAction {
     if (context.plugins.zcli_help.help_requested) {
-        // command_path == 0 → app help; otherwise the resolved command's help.
         try command_help.showCommand(context, true);
-        return null; // Stop execution
+        return .complete;
     }
-    return args; // Continue execution
-}
-
-// Lifecycle hook: handle an error. Return true if handled (suppresses it).
-// zcli_help's onError renders help for a bare command group (e.g. `myapp
-// remote` with no subcommand) on a CommandNotFound — it does NOT handle
-// suggestions for unknown commands; that's zcli_not_found's job.
-pub fn onError(
-    context: anytype,
-    err: anyerror,
-) !bool {
-    if (err == error.CommandNotFound and context.command_path.len > 0) {
-        // ... walk command_path to find the deepest registered group and
-        // render its help via command_help.showCommand(context, false) ...
-        return true; // Error handled, don't let it propagate
-    }
-    return false;
+    return .proceed;
 }
 
 // Commands provided by the plugin
@@ -137,15 +117,20 @@ an arena or a file handle) would use them instead of doing setup inline.
 
 Plugins can implement any of these lifecycle hooks:
 
-1. **`onStartup`** - Called once per invocation, after plugin data is captured but before argument parsing/routing (for one-time work like update checks)
-2. **`preParse`** - Called before argument parsing
-3. **`transformArgs`** - Called after `preParse`, can rewrite/short-circuit the raw argv before parsing
-4. **`handleGlobalOption`** - Called when global options are processed
-5. **`postParse`** - Called after parsing, before command execution
-6. **`applyConfigDefaults`** - Called during option parsing to fill fields from a lower-precedence source (e.g. a config file), after CLI + env but before required/dependency/exclusive validation
-7. **`preExecute`** - Called right before command execution (can cancel)
-8. **`postExecute`** - Called after command execution, with the command's success/failure outcome
-9. **`onError`** - Called when an error occurs
+1. **`onStartup`** — Runs after plugin context initialization, before argument processing
+2. **`preParse`** — Rewrites raw arguments before global option parsing
+3. **`handleGlobalOption`** — Receives declared global option values
+4. **`transformArgs`** — Rewrites remaining raw arguments or completes the invocation
+5. **`postParse`** — Receives routed raw positionals, before typed command parsing
+6. **`handleInformation`** — Completes informational requests before typed input, configuration, and validation
+7. **`loadConfig`** — Loads configuration after typed CLI/env parsing
+8. **`applyConfigDefaults`** — Fills options from lower-precedence sources before stdin materialization and resolved-input validation
+9. **`prepare`** — Performs operational setup after validation
+10. **`onFinish`** — Runs completion cleanup with the invocation outcome, including failures before preparation
+11. **`describeFailure` / `renderFailure`** — Describe or render failures without suppressing failure status
+
+See [the migration guide](CLI_MIGRATION.md) and [ADR-0036](adr/0036-invocation-outcomes.md)
+for failure precedence, cleanup, and application status policy.
 
 ### Plugin Integration
 
@@ -240,7 +225,8 @@ const registry = @import("../registry.zig");
 ```
 
 Instead, declare the shared code as a module once and register it via
-`shared_modules`; every command can then import it by name:
+`shared_modules`; every command and project-local plugin can then import it by
+name:
 
 ```zig
 // build.zig
@@ -260,7 +246,7 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 ```
 
 ```zig
-// in any command:
+// in any command or src/plugins/<name>.zig:
 const store = @import("store");
 ```
 
@@ -280,8 +266,10 @@ _ = zcli.addCommandTests(b, exe, zcli_dep, .{
 });
 ```
 
-See `examples/tasks` for a full, compiling example (the `store` module shared
-across its commands).
+See `examples/tasks` for a full command example and `examples/notes` for a
+local plugin that imports the shared `log` module. Plugins from dependencies
+and framework built-ins declare their own imports; project shared modules are
+not injected into them.
 
 ## Command Unit Tests (`addCommandTests`)
 
@@ -570,9 +558,9 @@ The plugin system maintains full type safety:
    // independently of the host app, so they can't name its Context type.
    pub fn preParse(context: anytype, args: []const []const u8) ![]const []const u8
    pub fn postParse(context: anytype, parsed_args: zcli.ParsedArgs) !?zcli.ParsedArgs
-   pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs
-   pub fn postExecute(context: anytype, success: bool) !void
-   pub fn onError(context: anytype, err: anyerror) !bool
+   pub fn prepare(context: anytype) !void
+   pub fn onFinish(context: anytype, success: bool) !void
+   pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool
 
    // Global options (optional)
    pub const global_options = [_]zcli.GlobalOption{ ... };
@@ -649,7 +637,7 @@ Because every plugin's data is a typed field on the shared `Context`, one plugin
 (or a command) can read another's state directly — no string keys, no casts:
 
 ```zig
-// Store data (e.g. in handleGlobalOption / preExecute)
+// Store data (e.g. in handleGlobalOption / prepare)
 context.plugins.my_plugin.enabled = true;
 
 // Retrieve data (from any other hook or command)

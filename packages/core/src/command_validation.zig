@@ -342,7 +342,7 @@ fn firstArgValidationError(
 /// Validate fully resolved command inputs and return the first failure in the
 /// ordering fixed by ADR-0022 and ADR-0025. On failure, `diag` is populated
 /// before the error is returned; the registry remains responsible for assigning
-/// it to the context, dispatching `onError`, and rendering an unhandled error.
+/// it to the context, finalizing a failure, and rendering its diagnostic.
 ///
 /// Validation rendering may allocate from `allocator`. The registry passes its
 /// command arena and keeps the parsed result alive until command dispatch ends,

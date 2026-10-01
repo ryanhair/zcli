@@ -200,14 +200,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
   at most once; repeating it (including `--flag` together with `--no-flag`) is an
   error. `--help` lists the useful spelling: `--flag` for a default-`false` flag,
   `--no-flag` for a default-`true` flag; the other is accepted but hidden.
-- An **accumulating array** option (`[][]const u8`, `[]u32`, …) collects multiple
-  values two ways, which compose: by **repeating** the flag (`--tag a --tag b`) or
-  by a **comma-separated** value (`--tag a,b`, `--tag=a,b`, `-t a,b`). Every value
-  token is split on `,`; an empty segment (`a,,b`, `,a`, `a,`) is a value error. A
-  literal comma is therefore always a separator here — it cannot appear inside an
-  element. `--help` marks these options `(repeatable)`. zcli deliberately does *not*
-  support the greedy space-separated form (`--tag a b`): it is ambiguous with zcli's
-  interleaved positionals (see ADR-0024).
+- An **accumulating array** option (`[][]const u8`, `[]u32`, …) collects one
+  element per flag occurrence (`--tag a --tag b`). Values remain literal by
+  default, including commas. Explicit `.delimiter = ','` metadata enables
+  delimiter shorthand (`--tag a,b`, `--tag=a,b`, `-t a,b`) and rejects empty
+  segments. Help distinguishes repeatable from delimited repeatable options.
+  Greedy space-separated consumption (`--tag a b`) remains unsupported because
+  it is ambiguous with interleaved positionals (ADR-0024).
 - Two compile-time guards keep the above coherent: a boolean field's name may not
   start with `no_` (it would collide with a `--no-` negation), and an optional
   field must default to `null` (that `null` is the "not passed" state; use a
@@ -267,7 +266,7 @@ could never be one of several mutually-exclusive choices).
 
 At runtime the checks run after every source is applied, in order:
 missing-required → `requires` → `exclusive`. A violation is reported like any
-other parse error and is interceptable by `onError` hooks:
+other parse error and is available to failure description and rendering hooks:
 
 - `Options '--json' and '--yaml' cannot be used together.`
 - `Option '--output-format' requires '--output'.`
@@ -403,7 +402,7 @@ pub const Context = struct {
     command_path: []const []const u8,
     available_commands: []const []const []const u8,
 
-    // Structured detail for the most recent parse/routing error (onError hooks)
+    // Structured detail for the most recent parse/routing error (failure handlers)
     diagnostic: ?zcli.ZcliDiagnostic,
 
     // Plugin introspection + type-safe per-plugin state
@@ -886,9 +885,9 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-`run` already reports the error, dispatches `onError` hooks, and calls
-`std.process.exit` with the appropriate status (see "Exit Codes" above) —
-there is no error to catch in `main`.
+`run` renders expected failures and exits with their resolved status. Unexpected
+errors retain their original trace and propagate to `main`. Embedders and tests
+use `invoke` or `invokeWithStdio` to inspect an owned result without exiting.
 
 ## 11. Plugin System
 
@@ -909,9 +908,12 @@ pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !v
 pub fn preParse(context: anytype, args: []const []const u8) ![]const []const u8 { }
 pub fn transformArgs(context: anytype, args: []const []const u8) !zcli.TransformResult { }
 pub fn postParse(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
-pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
-pub fn postExecute(context: anytype, success: bool) !void { }
-pub fn onError(context: anytype, err: anyerror) !bool { }
+pub fn handleInformation(context: anytype) !zcli.InvocationAction { }
+pub fn loadConfig(context: anytype) !void { }
+pub fn prepare(context: anytype) !void { }
+pub fn onFinish(context: anytype, success: bool) !void { }
+pub fn describeFailure(context: anytype, failure: zcli.Failure) !?zcli.failure.Description { }
+pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool { }
 
 // Fill option fields from a lower-precedence source (e.g. a config file) after
 // CLI + env parsing but before required/dependency validation. `provided` has
@@ -964,12 +966,12 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 3. Global options are extracted from argv and dispatched to each declaring plugin's `handleGlobalOption`
 4. All `transformArgs` hooks called (each may rewrite argv or stop processing)
 5. Command resolution routes to the matched command, then all `postParse` hooks called, threading each plugin's replacement `ParsedArgs`
-6. All `preExecute` hooks called before command execution (a plugin may cancel execution by returning `null`)
-7. Argv is parsed into the command's `Args`/`Options`
-8. All `applyConfigDefaults` hooks called after CLI/env parse — filling options no higher-precedence source set, and skipping any field marked `.no_config` (ADR-0032; the registry masks it into the `provided` view the hooks see, and restores it afterwards) — then required/dependency/exclusive/per-field validation runs
-9. Command executes
-10. All `postExecute` hooks called after execution (success or a handled failure)
-11. On error at any stage above, `onError` hooks called until one handles the error
+6. `handleInformation` may complete informational requests before config or validation
+7. Argv is parsed into the command's `Args`/`Options`; `loadConfig` loads configuration
+8. `applyConfigDefaults` fills fields not set by CLI/env and respects `.no_config`; opted-in stdin text is materialized, then required/dependency/exclusive/per-field validation runs on resolved options
+9. `prepare` performs operational setup
+10. The command executes; `onFinish` runs completion cleanup, preserving a primary failure
+11. Failures from any stage pass through description, status policy, and rendering; rendering never changes failure into success
 
 **Built-in Plugins:**
 

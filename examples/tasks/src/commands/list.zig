@@ -39,13 +39,10 @@ pub fn execute(_: Args, options: Options, context: *Context) !void {
 
     try w.writeAll("\n  ");
     try themed(data.name).bold().render(w, theme);
-    try w.writeAll("\n\n  ");
-    try themed("ID   Status        Priority  Title").dim().render(w, theme);
-    try w.writeAll("\n  ");
-    try themed("───  ────────────  ────────  ─────────────────────────").dim().render(w, theme);
-    try w.writeAll("\n");
+    try w.writeAll("\n\n");
 
-    var shown: usize = 0;
+    var rows: std.ArrayList([]const []const u8) = .empty;
+    defer rows.deinit(allocator);
     for (data.tasks) |task| {
         if (status_filter) |filter| {
             if (task.status != filter) continue;
@@ -53,28 +50,25 @@ pub fn execute(_: Args, options: Options, context: *Context) !void {
             continue;
         }
 
-        // Pad each cell to a fixed width, then apply the semantic color.
-        var id_buf: [16]u8 = undefined;
-        var status_buf: [16]u8 = undefined;
-        var pri_buf: [16]u8 = undefined;
-        const id_cell = try std.fmt.bufPrint(&id_buf, "{d:<3}", .{task.id});
-        const status_cell = try std.fmt.bufPrint(&status_buf, "{s:<12}", .{task.status.label()});
-        const pri_cell = try std.fmt.bufPrint(&pri_buf, "{s:<8}", .{task.priority.label()});
-
-        try w.writeAll("  ");
-        try task.status.themed(id_cell).render(w, theme);
-        try w.writeAll("  ");
-        try task.status.themed(status_cell).render(w, theme);
-        try w.writeAll("  ");
-        try task.priority.themed(pri_cell).render(w, theme);
-        try w.print("  {s}\n", .{task.title});
-        shown += 1;
+        try rows.append(allocator, try allocator.dupe([]const u8, &.{
+            try std.fmt.allocPrint(allocator, "{d}", .{task.id}),
+            task.status.label(),
+            task.priority.label(),
+            task.title,
+        }));
     }
 
-    if (shown == 0) {
+    if (rows.items.len == 0) {
         try w.writeAll("  ");
         try themed("No matching tasks.").dim().render(w, theme);
         try w.writeAll("\n");
+    } else {
+        try context.table().print(&.{
+            .{ .header = "ID", .min_width = 2 },
+            .{ .header = "Status", .min_width = 6 },
+            .{ .header = "Priority", .min_width = 8 },
+            .{ .header = "Title", .min_width = 8, .shrink_priority = 1 },
+        }, rows.items);
     }
     try w.writeAll("\n");
 }

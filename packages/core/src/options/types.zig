@@ -23,5 +23,8 @@ pub fn OptionsResult(comptime OptionsType: type) type {
         /// from "never provided" — a value comparison alone cannot. Config runs
         /// after the parser, so its contribution is detected separately.
         provided: [optionFieldCount(OptionsType)]bool = [_]bool{false} ** optionFieldCount(OptionsType),
+        /// CLI-only requests for a later stdin substitution. The parser is
+        /// pure: it records a final `-` value without reading the stream.
+        stdin_requested: [optionFieldCount(OptionsType)]bool = [_]bool{false} ** optionFieldCount(OptionsType),
     };
 }

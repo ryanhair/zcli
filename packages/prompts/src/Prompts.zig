@@ -55,6 +55,14 @@ pub const multiSelect = multi_select_prompt.multiSelect;
 pub const password = password_prompt.password;
 pub const number = number_prompt.number;
 pub const editor = editor_prompt.editor;
+/// Open an editor immediately on a controlling terminal. The returned content
+/// or recovery path belongs to this instance's allocator; call result.deinit.
+pub fn edit(self: Prompts, config: EditConfig) !EditResult {
+    return editor_prompt.edit(self.allocator, config);
+}
+pub const EditConfig = editor_prompt.EditConfig;
+pub const EditResult = editor_prompt.EditResult;
+pub const EditorFailure = editor_prompt.EditorFailure;
 
 const std = @import("std");
 const theme_pkg = @import("theme");

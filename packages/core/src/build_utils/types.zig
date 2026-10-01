@@ -95,6 +95,9 @@ pub const BuildConfig = struct {
     /// Mirrors `GenerateConfig.response_files`; emitted as a literal into the
     /// generated registry's `Config` (#764).
     response_files: bool = false,
+    stdin_max_bytes: usize = 16 * 1024 * 1024,
+    exit_codes: @import("../failure.zig").ExitCodes = .{},
+    failure_policy_module: ?*std.Build.Module = null,
 };
 
 /// The native libraries a plugin's backend needs, expressed as a hook the
@@ -449,6 +452,9 @@ pub const GenerateConfig = struct {
     /// The `--` terminator stays the per-invocation escape for a literal `@`
     /// value either way. See `response_file.zig` for the full semantics (#764).
     response_files: bool = false,
+    stdin_max_bytes: usize = 16 * 1024 * 1024,
+    exit_codes: @import("../failure.zig").ExitCodes = .{},
+    failure_policy_module: ?*std.Build.Module = null,
 };
 
 /// Configuration for `addCommandTests()` (the scaffolded-project unit-test

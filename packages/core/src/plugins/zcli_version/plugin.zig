@@ -10,8 +10,8 @@ pub const plugin_id = "zcli_version";
 
 /// Run below zcli_help (priority 100): when both `--help` and `--version` are
 /// passed, help wins. Priority orders every hook the registry dispatches
-/// (preExecute, onError, …) highest-first, so this also decides who answers a
-/// `--version` that lands on a non-existent command (see `onError` below) —
+/// (showInformation, renderRoutingError, …) highest-first, so this also decides who answers a
+/// `--version` that lands on a non-existent command (see `renderRoutingError` below) —
 /// help's group/no-command handling is consulted before ours.
 pub const priority = 90;
 
@@ -46,7 +46,11 @@ pub fn handleGlobalOption(
 }
 
 /// Pre-execute hook to show version if requested
-pub fn preExecute(
+pub fn handleInformation(context: anytype) !zcli.InvocationAction {
+    return if ((try showInformation(context, .{})) == null) .complete else .proceed;
+}
+
+fn showInformation(
     context: anytype,
     args: zcli.ParsedArgs,
 ) !?zcli.ParsedArgs {
@@ -63,12 +67,17 @@ pub fn preExecute(
 /// Error hook: honor `--version` even when routing fails.
 ///
 /// The flag is consumed pre-routing (in `handleGlobalOption`) but only acted on
-/// post-routing (in `preExecute`). When it rides on a non-existent command,
-/// routing returns `error.CommandNotFound` before `preExecute` ever runs — so
+/// post-routing (in `showInformation`). When it rides on a non-existent command,
+/// routing returns `error.CommandNotFound` before `showInformation` ever runs — so
 /// `myapp --version bogus` would otherwise report "command not found" instead
 /// of the version the user asked for. Catch that here: if a version was
 /// requested, print it (stdout) and mark the error handled.
-pub fn onError(
+pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+    if (failure.category != .unknown_command) return false;
+    return renderRoutingError(context, failure.cause);
+}
+
+fn renderRoutingError(
     context: anytype,
     err: anyerror,
 ) !bool {
@@ -92,14 +101,14 @@ fn showVersion(context: anytype) !void {
 test "version plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "global_options"));
     try std.testing.expect(@hasDecl(@This(), "handleGlobalOption"));
-    try std.testing.expect(@hasDecl(@This(), "preExecute"));
-    try std.testing.expect(@hasDecl(@This(), "onError"));
+    try std.testing.expect(@hasDecl(@This(), "showInformation"));
+    try std.testing.expect(@hasDecl(@This(), "renderRoutingError"));
     try std.testing.expect(@hasDecl(@This(), "ContextData"));
     try std.testing.expect(@hasDecl(@This(), "isVersionRequested"));
 }
 
 // Note: end-to-end coverage (—version prints and skips execution, -V, and the
-// onError path for --version on a bogus command, running through a real
+// renderRoutingError path for --version on a bogus command, running through a real
 // registry) lives in plugin_pipeline_test.zig. These tests instead exercise
 // this file's functions directly, driving `context` by hand.
 
@@ -154,7 +163,7 @@ test "handleGlobalOption sets version_requested only for a true 'version' value"
     try std.testing.expect(isVersionRequested(&ctx));
 }
 
-test "preExecute prints the version and stops execution when requested" {
+test "showInformation prints the version and stops execution when requested" {
     const allocator = std.testing.allocator;
 
     var stdio: zcli.Stdio = undefined;
@@ -169,7 +178,7 @@ test "preExecute prints the version and stops execution when requested" {
 
     ctx.plugins.zcli_version.version_requested = true;
     const args = zcli.ParsedArgs{ .positional = &.{} };
-    const result = try preExecute(&ctx, args);
+    const result = try showInformation(&ctx, args);
     try ctx.stdout().flush();
 
     // null tells the registry to stop — the command never runs.
@@ -177,7 +186,7 @@ test "preExecute prints the version and stops execution when requested" {
     try std.testing.expectEqualStrings("myapp v2.3.4\n", aw.written());
 }
 
-test "preExecute passes args through unchanged when version wasn't requested" {
+test "showInformation passes args through unchanged when version wasn't requested" {
     const allocator = std.testing.allocator;
 
     var stdio: zcli.Stdio = undefined;
@@ -191,7 +200,7 @@ test "preExecute passes args through unchanged when version wasn't requested" {
     defer ctx.deinit();
 
     const args = zcli.ParsedArgs{ .positional = &.{"greet"} };
-    const result = try preExecute(&ctx, args);
+    const result = try showInformation(&ctx, args);
     try ctx.stdout().flush();
 
     try std.testing.expect(result != null);
@@ -199,7 +208,7 @@ test "preExecute passes args through unchanged when version wasn't requested" {
     try std.testing.expectEqualStrings("", aw.written()); // nothing printed
 }
 
-test "onError prints the version and reports handled only when version was requested" {
+test "renderRoutingError prints the version and reports handled only when version was requested" {
     const allocator = std.testing.allocator;
 
     var stdio: zcli.Stdio = undefined;
@@ -213,16 +222,16 @@ test "onError prints the version and reports handled only when version was reque
     defer ctx.deinit();
 
     // Not requested: CommandNotFound passes through untouched.
-    try std.testing.expect(!(try onError(&ctx, error.CommandNotFound)));
+    try std.testing.expect(!(try renderRoutingError(&ctx, error.CommandNotFound)));
     try std.testing.expectEqualStrings("", aw.written());
 
     // A different error, even when requested, is not this plugin's to handle.
     ctx.plugins.zcli_version.version_requested = true;
-    try std.testing.expect(!(try onError(&ctx, error.ArgumentInvalidValue)));
+    try std.testing.expect(!(try renderRoutingError(&ctx, error.ArgumentInvalidValue)));
     try std.testing.expectEqualStrings("", aw.written());
 
     // Requested + CommandNotFound: prints the version and reports handled.
-    try std.testing.expect(try onError(&ctx, error.CommandNotFound));
+    try std.testing.expect(try renderRoutingError(&ctx, error.CommandNotFound));
     try ctx.stdout().flush();
     try std.testing.expectEqualStrings("myapp v2.3.4\n", aw.written());
 }

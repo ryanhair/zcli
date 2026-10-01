@@ -58,26 +58,24 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         , .{ task.title, task.description, task.id });
         defer allocator.free(initial);
 
-        const msg = try std.fmt.allocPrint(allocator, "Edit task #{d}:", .{task.id});
-        defer allocator.free(msg);
-
-        const content = p.editor(.{
-            .message = msg,
+        var edit_result = try p.edit(.{
             .io = context.io,
             .default = initial,
             .extension = ".md",
             .environ = context.environ,
-        }) catch |err| switch (err) {
-            error.EndOfStream => return context.fail("edit requires an interactive terminal (stdin closed).", .{}),
-            else => return err,
+        });
+        defer edit_result.deinit(allocator);
+        const content = switch (edit_result) {
+            .edited => |text| text,
+            .failed => |failure| {
+                if (failure.recovery_path) |path|
+                    return context.fail("Editor failed; your content is preserved at {s}", .{path});
+                return context.fail("Editor failed during {s}", .{@tagName(failure.phase)});
+            },
         };
-        defer allocator.free(content);
 
         const parsed_edit = parseEdit(content);
-        if (parsed_edit.title.len == 0) {
-            try context.stderr().writeAll("Error: Title cannot be empty\n");
-            return;
-        }
+        if (parsed_edit.title.len == 0) return context.fail("Title cannot be empty", .{});
 
         // parsed_edit slices into `content`, which is freed by defer.
         // save() serializes synchronously before defers run, so this is safe.
@@ -89,7 +87,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         return;
     }
 
-    try context.stderr().print("Error: Task #{d} not found\n", .{args.id});
+    return context.fail("Task #{d} not found", .{args.id});
 }
 
 const ParsedEdit = struct {

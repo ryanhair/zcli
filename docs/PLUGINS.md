@@ -26,6 +26,95 @@ Plugins store typed data in `context.plugins.<plugin_id>` on your app's generate
 if (context.plugins.zcli_help.help_requested) { ... }
 ```
 
-A plugin is a Zig module with a `plugin_id` and any of the lifecycle exports (`global_options`, `handleGlobalOption`, `preExecute`, `onError`); it can also ship its own commands. Hook parameters are typed `anytype` — a plugin is compiled independently of the app that hosts it.
+A plugin is a Zig module with a `plugin_id` and any of the lifecycle exports (`global_options`, `handleGlobalOption`, `handleInformation`, `loadConfig`, `prepare`, `onFinish`, `describeFailure`); it can also ship its own commands. Hook parameters are typed `anytype` — a plugin is compiled independently of the app that hosts it.
+
+Informational handling runs before application configuration and operational setup.
+`loadConfig` supplies input data before validation; `prepare` runs afterward.
+Failures in any stage retain their failure status when described or rendered.
+`onFinish` runs at completion, and resource teardown must be safe on default state.
+See [the invocation lifecycle decision](adr/0036-invocation-outcomes.md).
 
 For the full built-in list, `plugins_dir` auto-discovery, and the complete plugin-authoring guide, see **[zcli.sh/plugins](https://zcli.sh/plugins/)**; config-file discovery and the value cascade have their own guide at **[zcli.sh/docs/config](https://zcli.sh/docs/config/)**. For how plugins are discovered and merged into the generated registry, see [BUILD.md](BUILD.md).
+
+## Acquire resources when commands need them
+
+Put a lazy accessor on `ContextData` when only some commands need a resource.
+Capture the invocation's allocator, I/O, and environment during initialization;
+connect only when a command calls the accessor:
+
+```zig
+// src/plugins/daemon.zig
+const std = @import("std");
+const Client = @import("app_core").Client;
+pub const plugin_id = "daemon";
+
+pub const ContextData = struct {
+    allocator: ?std.mem.Allocator = null,
+    io: ?std.Io = null,
+    environ: ?*const std.process.Environ.Map = null,
+    connection: ?Client = null,
+
+    pub fn client(self: *@This()) !*Client {
+        if (self.connection == null) {
+            self.connection = try Client.connect(self.allocator.?, self.io.?, self.environ.?);
+        }
+        return &self.connection.?;
+    }
+};
+
+pub fn initContextData(data: *ContextData, context: anytype) !void {
+    data.* = .{ .allocator = context.allocator, .io = context.io, .environ = context.environ };
+}
+
+pub fn deinitContextData(data: *ContextData, _: std.mem.Allocator) void {
+    if (data.connection) |*connection| connection.deinit();
+}
+
+// Inside a command's execute():
+const client = try context.plugins.daemon.client();
+try client.listCards(context.stdout());
+```
+
+`Client.connect`, `listCards`, and `deinit` here are your application's API.
+Commands such as `version` never request the client, so they work without reading
+its configuration or starting a daemon. Cleanup is safe even if no connection
+was acquired. Supply `app_core` through `shared_modules`; project plugins under
+`plugins_dir` receive those imports just like commands.
+
+## Command-specific plugin settings
+
+When a plugin needs policy before a command runs, declare a typed config with
+defaults. Commands override only the fields they need:
+
+```zig
+// src/plugins/audit.zig
+pub const plugin_id = "audit";
+pub const CommandConfig = struct {
+    record: bool = true,
+};
+
+pub fn prepare(context: anytype) !void {
+    if (context.command_config.audit.record) {
+        // Record this routed command.
+    }
+}
+
+// src/commands/version.zig
+pub const meta = .{
+    .description = "Show version",
+    .plugins = .{ .audit = .{ .record = false } },
+};
+```
+
+The registry checks plugin names, fields, and values at compile time. Commands
+without an override use `CommandConfig` defaults. Aliases use their command's
+settings; parent command settings do not implicitly apply to children. See
+[ADR-0040](adr/0040-typed-plugin-command-config.md).
+
+Use `CommandConfig` for policy a hook must know before command execution, such
+as whether a command is auditable. Resource accessors handle acquisition when
+the command actually needs it.
+
+Project plugins under `plugins_dir` can import the same `shared_modules` as
+commands. `examples/notes/src/plugins/verbose.zig` imports the shared `log`
+module without extra build wiring.

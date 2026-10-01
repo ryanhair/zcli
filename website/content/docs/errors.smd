@@ -211,20 +211,17 @@ The framework automatically:
 
 ### Command errors
 
-Commands can return errors which will be handled by the framework:
+Commands return ordinary Zig errors. Use `context.fail` to attach a useful
+explanation; the framework records the failure, selects its status, and renders
+it after command cleanup. Printing an explanation and returning normally would
+incorrectly report success to the shell.
 
 ```zig
 pub fn execute(args: Args, options: Options, context: *Context) !void {
     const io = context.io;
     const file = std.Io.Dir.cwd().openFile(io, args.filename, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            try context.stderr().print("Error: File '{s}' not found\n", .{args.filename});
-            return;
-        },
-        error.AccessDenied => {
-            try context.stderr().print("Error: Permission denied accessing '{s}'\n", .{args.filename});
-            return;
-        },
+        error.FileNotFound => return context.fail("File '{s}' not found", .{args.filename}),
+        error.AccessDenied => return context.fail("Permission denied accessing '{s}'", .{args.filename}),
         else => return err, // Let framework handle unexpected errors
     };
     defer file.close(io);
@@ -232,6 +229,39 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // Process file...
 }
 ```
+
+### Invocation outcomes
+
+The registry classifies failures where they originate. A command returning an
+error whose name happens to match a parser error does not become a usage failure.
+Failures retain their category, cause, lifecycle stage, origin, and diagnostic.
+An application renderer may print JSON or human text without changing whether
+the invocation failed.
+
+Framework defaults are `2` for invalid input, `3` for unknown commands, and `1`
+for reported application failures. Applications own their numeric exit policy.
+A classified failure keeps its status even if writing the diagnostic fails;
+otherwise a broken downstream pipe exits `141`, and other failed writes remain
+failures even when command execution itself succeeded.
+
+Use the non-exiting invocation interface when embedding a CLI or testing the
+whole pipeline. Its result owns retained diagnostics until `deinit()`. The normal
+`run()` entry point applies process-exit behavior. Direct command-body tests use
+`runCommand`; argv, plugins, stdin resolution, rendering, and status are covered
+by `runInvocation` through the same engine used in production.
+
+### Setup and cleanup failures
+
+Help and version run before application input loading and operational preparation.
+Configuration supplies values before validation; authentication and service startup
+run afterward. A typo in a flag therefore cannot start a daemon. All fallible
+stages use the same failure path, and rendering a setup failure never permits the
+command to proceed.
+
+Application rendering selected by global options is available after global handling
+completes successfully. Earlier failures use the default renderer. Completion and
+renderer failures cannot replace the original cause or turn a failed invocation
+into success.
 
 ## Memory management
 
@@ -248,7 +278,9 @@ The framework handles this cleanup automatically for command implementations.
 
 ### Error contexts
 
-Error contexts are lightweight and don't require explicit cleanup.
+Standalone parser diagnostics borrow their input and do not require separate
+cleanup. An owned invocation result retains its diagnostics and must be released
+with `deinit()`; do not keep pointers into it after that call.
 
 ## Best practices
 

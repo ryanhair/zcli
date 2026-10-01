@@ -27,7 +27,7 @@ by the CI-compiled canonical examples:
   since the foundation releases; the recent scaffolding tools (`add option/arg`,
   `mv`, `rm`) edit these files in place precisely *because* the contract is
   settled enough to splice mechanically.
-- **The plugin system** — lifecycle hooks (`preExecute`, `onError`,
+- **The plugin system** — lifecycle hooks (`prepare`, `renderFailure`,
   `handleGlobalOption`), `global_options`, plugin-owned commands, and typed
   `context.plugins.<id>` data. Seven plugins ship in-box on this surface (see
   [docs/PLUGINS.md](docs/PLUGINS.md) for the canonical list).
@@ -73,7 +73,7 @@ The two lists below are ratified: this is the line 1.0 will draw.
   `addCommandTests()` signatures and their typed config structs;
   `zcli.builtin(...)`; `zcli.config(...)`; `zcli.option(...)`.
 - **Plugin hook signatures.** `plugin_id`, `ContextData`, `global_options`,
-  `handleGlobalOption`, `preExecute`, `onError`, and the plugin-command
+  `handleGlobalOption`, `prepare`, `renderFailure`, and the plugin-command
   convention — the contract a third-party plugin is written against.
 - **Package names and the public module surface.** The post-rename package set
   (`core`, `prompts`, `progress`, `theme`, `markdown`, `terminal`, `vterm`,

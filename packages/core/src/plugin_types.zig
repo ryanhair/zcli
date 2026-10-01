@@ -169,22 +169,19 @@ pub fn hasPostParse(comptime T: type) bool {
     return @hasDecl(T, "postParse");
 }
 
-/// See `hasPreParse`. `preExecute` runs immediately before the command body,
-/// and may cancel execution by returning null.
-pub fn hasPreExecute(comptime T: type) bool {
-    return @hasDecl(T, "preExecute");
+/// Operational preparation runs after typed input validation.
+pub fn hasPrepare(comptime T: type) bool {
+    return @hasDecl(T, "prepare");
 }
 
-/// See `hasPreParse`. `postExecute` runs after the command body, on success and
-/// on a handled failure alike.
-pub fn hasPostExecute(comptime T: type) bool {
-    return @hasDecl(T, "postExecute");
+/// Completion runs for initialized plugins on every outcome.
+pub fn hasOnFinish(comptime T: type) bool {
+    return @hasDecl(T, "onFinish");
 }
 
-/// See `hasPreParse`. `onError` runs on a failure at any stage, until one
-/// plugin reports the error handled.
-pub fn hasOnError(comptime T: type) bool {
-    return @hasDecl(T, "onError");
+/// A renderer may claim presentation, without changing failure into success.
+pub fn hasRenderFailure(comptime T: type) bool {
+    return @hasDecl(T, "renderFailure");
 }
 
 /// Check if a type has an onStartup hook. Runs once per invocation after plugin
@@ -231,9 +228,12 @@ pub fn getPriority(comptime T: type) i32 {
 ///   handleGlobalOption(context, name: []const u8, value: anytype) !void
 ///   preParse(context, args: []const []const u8) ![]const []const u8
 ///   postParse(context, args: zcli.ParsedArgs) !?zcli.ParsedArgs
-///   preExecute(context, args: zcli.ParsedArgs) !?zcli.ParsedArgs
-///   postExecute(context, success: bool) !void
-///   onError(context, err: anyerror) !bool
+///   handleInformation(context) !zcli.InvocationAction
+///   loadConfig(context) !void
+///   prepare(context) !void
+///   onFinish(context, success: bool) !void
+///   describeFailure(context, failure: zcli.Failure) !?zcli.failure.Description
+///   renderFailure(context, failure: zcli.Failure) !bool
 ///
 ///   applyConfigDefaults(context, comptime OptionsType: type,
 ///                       options: *OptionsType, provided: []const bool,
@@ -263,13 +263,16 @@ pub fn getPriority(comptime T: type) i32 {
 ///     the built-in zcli_config plugin allocates them from a parse arena tied
 ///     to its ContextData so they die with `deinitContextData`.
 const hook_names = [_][]const u8{
+    "handleInformation",
+    "loadConfig",
+    "prepare",
+    "onFinish",
+    "describeFailure",
+    "renderFailure",
     "transformArgs",
     "handleGlobalOption",
     "preParse",
     "postParse",
-    "preExecute",
-    "postExecute",
-    "onError",
     "onStartup",
     "applyConfigDefaults",
 };
@@ -293,6 +296,7 @@ const contract_names = hook_names ++ [_][]const u8{
     "priority",
     "plugin_id",
     "ContextData",
+    "CommandConfig",
     "initContextData",
     "deinitContextData",
     "init",
@@ -304,9 +308,9 @@ const contract_names = hook_names ++ [_][]const u8{
 /// registration, e.g. in tests).
 pub fn requirePluginId(comptime Plugin: type) void {
     comptime {
-        if (@hasDecl(Plugin, "ContextData") and !@hasDecl(Plugin, "plugin_id")) {
-            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares ContextData but no plugin_id. " ++
-                "ContextData is exposed as a typed field on context.plugins named by plugin_id. Add:\n" ++
+        if ((@hasDecl(Plugin, "ContextData") or @hasDecl(Plugin, "CommandConfig")) and !@hasDecl(Plugin, "plugin_id")) {
+            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares ContextData or CommandConfig but no plugin_id. " ++
+                "Plugin data and command config use typed fields named by plugin_id. Add:\n" ++
                 "    pub const plugin_id = \"my_plugin\";");
         }
     }
@@ -325,6 +329,9 @@ pub fn validatePlugin(comptime Plugin: type) void {
         // headroom above the 1000 default so adding a hook name never trips it.
         @setEvalBranchQuota(10_000);
         if (@typeInfo(Plugin) != .@"struct") return;
+        if (@hasDecl(Plugin, "preExecute")) @compileError("preExecute was replaced: use prepare(context) after validation, loadConfig(context) for input defaults, or handleInformation(context) for successful completion");
+        if (@hasDecl(Plugin, "postExecute")) @compileError("postExecute was replaced by onFinish(context, success), which runs for every initialized invocation");
+        if (@hasDecl(Plugin, "onError")) @compileError("onError was replaced: describeFailure supplies diagnostic data; renderFailure reports failure without converting it into success; use handleInformation for help/version");
         for (@typeInfo(Plugin).@"struct".decls) |decl| {
             if (isContractName(decl.name)) continue;
             // Only functions can be hooks; consts near a hook name are inert.
@@ -346,6 +353,17 @@ pub fn validatePlugin(comptime Plugin: type) void {
         // instead of letting it fail obscurely at the `context.plugins.<id>`
         // use-site (or silently getting no slot).
         requirePluginId(Plugin);
+        if (@hasDecl(Plugin, "CommandConfig")) {
+            const C = Plugin.CommandConfig;
+            if (@TypeOf(C) != type or @typeInfo(C) != .@"struct") {
+                @compileError("plugin '" ++ @typeName(Plugin) ++ "' CommandConfig must be a struct type");
+            }
+            for (@typeInfo(C).@"struct".fields) |field| {
+                if (field.default_value_ptr == null) {
+                    @compileError("plugin '" ++ @typeName(Plugin) ++ "' CommandConfig field '" ++ field.name ++ "' needs a default so commands without metadata have a valid config");
+                }
+            }
+        }
         // deinitContextData is the cleanup hook for ContextData and only runs
         // when ContextData exists — without it the function is silently dead,
         // the same failure shape as a misspelled lifecycle hook above.
@@ -419,10 +437,7 @@ test "validatePlugin accepts a well-formed plugin with helpers" {
     const Plugin = struct {
         pub const plugin_id = "valid_plugin";
         pub const priority = 10;
-        pub fn preExecute(context: anytype, args: anytype) !?@TypeOf(args) {
-            _ = context;
-            return args;
-        }
+        pub fn prepare(_: anytype) !void {}
         // A helper far from any hook name must not be flagged.
         pub fn isHelpRequested(context: anytype) bool {
             _ = context;

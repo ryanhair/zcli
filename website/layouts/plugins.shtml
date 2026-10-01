@@ -208,15 +208,18 @@
           <div class="table-scroll">
           <table class="hooks">
             <tbody>
-              <tr><td class="h">onStartup</td><td class="d">Runs once before routing — set up shared state.</td></tr>
+              <tr><td class="h">onStartup</td><td class="d">Runs before global parsing. Capture lightweight state; defer operational setup to prepare.</td></tr>
               <tr><td class="h">preParse</td><td class="d">Runs before argument parsing; can rewrite the raw argv.</td></tr>
               <tr><td class="h">transformArgs</td><td class="d">Runs after <code>preParse</code>; can rewrite or short-circuit the raw argv before parsing.</td></tr>
               <tr><td class="h">handleGlobalOption</td><td class="d">Called for each global option your plugin declared; stash the value in your context data.</td></tr>
-              <tr><td class="h">postParse</td><td class="d">Runs after parsing, before command execution.</td></tr>
+              <tr><td class="h">postParse</td><td class="d">Inspects or replaces routed raw positionals before typed command parsing.</td></tr>
               <tr><td class="h">applyConfigDefaults</td><td class="d">Fills option fields from a lower-precedence source (e.g. a config file), after CLI + env parsing but before required/dependency validation.</td></tr>
-              <tr><td class="h">preExecute</td><td class="d">Runs before the matched command. Return <code>null</code> to halt execution, or the (possibly transformed) args to continue.</td></tr>
-              <tr><td class="h">postExecute</td><td class="d">Runs after the command finishes, with a <code>success: bool</code> outcome — flush, report, clean up.</td></tr>
-              <tr><td class="h">onError</td><td class="d">Handle an error. Return <code>true</code> if you handled it.</td></tr>
+              <tr><td class="h">handleInformation</td><td class="d">Handles help-like requests before config and validation. Return <code>.complete</code> after successful informational output, otherwise <code>.proceed</code>.</td></tr>
+              <tr><td class="h">loadConfig</td><td class="d">Loads input configuration before resolved-value validation.</td></tr>
+              <tr><td class="h">prepare</td><td class="d">Runs operational setup after validation. Return an error to stop before the command runs.</td></tr>
+              <tr><td class="h">onFinish</td><td class="d">Runs at invocation completion, including setup failures, with a <code>success: bool</code> outcome.</td></tr>
+              <tr><td class="h">describeFailure</td><td class="d">Adds an explanation without suppressing failure status.</td></tr>
+              <tr><td class="h">renderFailure</td><td class="d">Returns whether this plugin rendered the failure. Rendering does not make the invocation successful.</td></tr>
             </tbody>
           </table>
           </div>
@@ -228,13 +231,12 @@
     }
 }
 
-<span class="kw">pub fn</span> <span class="fn">preExecute</span>(context: <span class="kw">anytype</span>, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+<span class="kw">pub fn</span> <span class="fn">prepare</span>(context: <span class="kw">anytype</span>) !<span class="kw">void</span> {
     _ = context;
-    <span class="cm">// Return null to stop; return args to let the command run.</span>
-    <span class="kw">return</span> args;
+    <span class="cm">// Inputs are valid. Acquire operational resources here if needed.</span>
 }
 
-<span class="kw">pub fn</span> <span class="fn">postExecute</span>(context: <span class="kw">anytype</span>, success: <span class="fn">bool</span>) !<span class="kw">void</span> {
+<span class="kw">pub fn</span> <span class="fn">onFinish</span>(context: <span class="kw">anytype</span>, success: <span class="fn">bool</span>) !<span class="kw">void</span> {
     _ = success;
     <span class="kw">const</span> start = context.plugins.timing.started_ns;
     <span class="kw">if</span> (start != <span class="num">0</span>) {
@@ -243,9 +245,9 @@
     }
 }
 
-<span class="kw">pub fn</span> <span class="fn">onError</span>(context: <span class="kw">anytype</span>, err: anyerror) !<span class="fn">bool</span> {
-    _ = context; _ = err;
-    <span class="kw">return</span> <span class="num">false</span>; <span class="cm">// not handled — let the next plugin try</span>
+<span class="kw">pub fn</span> <span class="fn">describeFailure</span>(context: <span class="kw">anytype</span>, failure: zcli.Failure) !?zcli.failure.Description {
+    _ = context; _ = failure;
+    <span class="kw">return</span> <span class="num">null</span>; <span class="cm">// no additional description</span>
 }</pre>
           </div>
         </section>

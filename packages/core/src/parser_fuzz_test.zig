@@ -108,6 +108,7 @@ fn runResponseFileCorpus() !void {
 fn fuzzParsers(_: void, smith: *testing.Smith) !void {
     try fuzzArgv({}, smith);
     try fuzzEquivalentSpellings({}, smith);
+    try fuzzDelimitedSpellings(smith);
 }
 
 fn fuzzArgv(_: void, smith: *testing.Smith) !void {
@@ -185,17 +186,8 @@ fn fuzzEquivalentSpellings(_: void, smith: *testing.Smith) !void {
     const output = output_buf[0..output_len];
 
     var tag_buf: [48]u8 = undefined;
-    var tag_len = smith.slice(&tag_buf);
-    // Empty CSV segments are deliberately invalid. Keep this metamorphic
-    // target in the success domain so all three spellings can be compared.
-    if (tag_len == 0) {
-        tag_buf[0] = 'x';
-        tag_len = 1;
-    }
+    const tag_len = smith.slice(&tag_buf);
     normalizeSeparatedValue(tag_buf[0..tag_len]);
-    for (tag_buf[0..tag_len]) |*byte| {
-        if (byte.* == ',') byte.* = '_';
-    }
     const tag = tag_buf[0..tag_len];
 
     var positional_buf: [48]u8 = undefined;
@@ -391,4 +383,35 @@ fn concat(buffer: []u8, prefix: []const u8, value: []const u8) ![]const u8 {
     @memcpy(buffer[0..prefix.len], prefix);
     @memcpy(buffer[prefix.len..][0..value.len], value);
     return buffer[0 .. prefix.len + value.len];
+}
+
+fn fuzzDelimitedSpellings(smith: *testing.Smith) !void {
+    var value_buffer: [48]u8 = undefined;
+    var length = smith.slice(&value_buffer);
+    if (length == 0) {
+        value_buffer[0] = 'x';
+        length = 1;
+    }
+    normalizeSeparatedValue(value_buffer[0..length]);
+    for (value_buffer[0..length]) |*ch| if (ch.* == ',') {
+        ch.* = '_';
+    };
+    const value = value_buffer[0..length];
+    var delimited_buffer: [64]u8 = undefined;
+    const delimited = try std.fmt.bufPrint(&delimited_buffer, "first,{s},last", .{value});
+    var long_buffer: [80]u8 = undefined;
+    const long = try concat(&long_buffer, "--tags=", delimited);
+    var short_buffer: [80]u8 = undefined;
+    const short = try concat(&short_buffer, "-t=", delimited);
+    const meta = .{ .options = .{ .tags = .{ .short = 't', .delimiter = ',' } } };
+    const a = try zcli.parseCommandLine(Args, Options, meta, testing.allocator, null, &.{ "--tags", delimited }, null);
+    defer a.deinit();
+    const b = try zcli.parseCommandLine(Args, Options, meta, testing.allocator, null, &.{long}, null);
+    defer b.deinit();
+    const c = try zcli.parseCommandLine(Args, Options, meta, testing.allocator, null, &.{short}, null);
+    defer c.deinit();
+    try expectEquivalent(a, b);
+    try expectEquivalent(a, c);
+    try testing.expectEqual(@as(usize, 3), a.options.tags.len);
+    try testing.expectEqualStrings(value, a.options.tags[1]);
 }

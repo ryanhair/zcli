@@ -209,6 +209,40 @@ test "status shows green checkmark" {
 - Commands that call `std.process.exit()` will exit the test runner
 - `.stdin` covers line input only — raw-mode keystrokes (arrows, backspace, hidden input, Ctrl-C) need the PTY-backed E2E tier
 
+## In-process invocation testing
+
+`runCommand` calls a command body with typed values. To test routing, option
+parsing, stdin-option resolution, plugin hooks, and failure policy together, use
+`runInvocation` from the same `zcli_testing_unit` module. It calls the production
+registry engine and does not spawn or exit a process.
+
+```zig
+const registry = @import("command_registry");
+
+test "log reads piped text" {
+    var result = try testing.runInvocation(registry, .{
+        .argv = &.{ "log", "card-7", "--body", "-" },
+        .stdin = "first line\nsecond line\n",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), result.invocation.status);
+    try std.testing.expect(result.invocation.outcome == .success);
+}
+```
+
+Wire the real generated registry into this test module, rather than the stub used
+for isolated command-body tests. A registry type produced by
+`zcli.Registry.init(...).register(...).build()` works too. `argv` excludes the
+executable name. Omitted stdin reaches EOF immediately; omitted environment is
+empty. Pass `.environ` and `.allocator` when needed.
+
+The result captures `stdout` and `stderr`, and its `invocation` contains `status`,
+`outcome`, and secondary errors. A `.failure` outcome retains its category, cause,
+stage, origin, message, and structured diagnostic until `result.deinit()`.
+Rendering a failure does not turn it into success. Use subprocess tests to verify
+the final process exit boundary, and PTY tests for real terminal behavior.
+
 ## Integration testing
 
 Test your compiled CLI binary as a subprocess. This validates the full stack — argument parsing, command routing, plugin hooks, and output generation.
@@ -729,3 +763,8 @@ myapp/
 ├── build.zig
 └── build.zig.zon
 ```
+
+`Prompts.edit` opens a controlling terminal independently of captured command
+streams. Cover interactive editing with a PTY test, or use explicit editor argv
+and `.attachment = .inherit` for a noninteractive child fixture. The invitation
+prompt (`Prompts.editor`) still respects noninteractive streams.

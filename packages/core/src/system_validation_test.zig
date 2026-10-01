@@ -258,10 +258,11 @@ test "system validation: plugin interface compilation" {
             _: anytype,
         ) !void {}
 
-        pub fn onError(
+        pub fn renderFailure(
             _: anytype,
-            err: anyerror,
+            failure: zcli.Failure,
         ) !bool {
+            const err = failure.cause;
             return err == error.CommandNotFound;
         }
     };

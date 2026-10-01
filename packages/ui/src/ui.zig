@@ -41,6 +41,16 @@ pub const styleEql = surface.styleEql;
 
 pub const Renderer = @import("diff.zig").Renderer;
 pub const App = @import("app.zig").App;
+/// One-shot, noninteractive tables for normal command output.
+pub const StaticTable = @import("static_table.zig").StaticTable;
+
+/// Width of the process stdout terminal, when it is a terminal. Context
+/// additionally checks for captured/injected stdout before using this value.
+pub fn stdoutWidth() ?usize {
+    if (!terminal.isStdoutTty()) return null;
+    const size = terminal.getWindowSize(std.Io.File.stdout().handle) catch return null;
+    return if (size.col > 0) size.col else null;
+}
 /// Full-screen input event (`App.nextEvent`) — a key, resize, mouse, or focus.
 pub const Event = @import("app.zig").Event;
 /// A key press (`Event.key`), re-exported from `terminal` for widget `handle`

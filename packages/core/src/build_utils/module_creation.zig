@@ -79,7 +79,7 @@ pub fn createDiscoveredModules(
 }
 
 /// Add plugin modules to registry during generation
-pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
+pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, plugins: []const PluginInfo, shared_modules: []const types.SharedModule) void {
     for (plugins) |plugin_info| {
         if (plugin_info.is_local) {
             // Two kinds of "local" plugin resolve against different roots:
@@ -97,6 +97,19 @@ pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Mod
                 .root_source_file = root_source_file,
             });
             plugin_module.addImport("zcli", zcli_module);
+
+            // Project plugins have the same application-owned imports as
+            // commands. Framework built-ins and dependency plugins manage
+            // their own imports and must not depend on the consuming project.
+            if (plugin_info.project_path != null) {
+                for (shared_modules) |shared_mod| {
+                    if (std.mem.eql(u8, shared_mod.name, "zcli")) {
+                        std.log.err("Shared module 'zcli' conflicts with the framework import in project plugin '{s}'", .{plugin_info.name});
+                        @panic("Module name conflict detected");
+                    }
+                    plugin_module.addImport(shared_mod.name, shared_mod.module);
+                }
+            }
 
             registry_module.addImport(plugin_info.import_name, plugin_module);
         } else {

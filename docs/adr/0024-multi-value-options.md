@@ -1,63 +1,53 @@
-# Multi-value options: comma-separated, not greedy space-separated
+# Multi-value options: literal repetition with explicit delimiters
 
-Status: accepted (implemented)
+Status: amended (implemented)
 
-An array-typed option (`tags: [][]const u8`, `nums: []u32`, …) collects several
-values. Until now the only spelling was **repetition** — `--tag a --tag b`. Users
-coming from other CLIs asked for a way to pass several values without repeating the
-flag. Two spellings were on the table:
+## Context
 
-- **Comma-separated** — `--tag a,b`
-- **Greedy space-separated** — `--tag a b` (one flag consuming consecutive tokens)
+Array options collect repeated values. Originally every value split on comma.
+That silently changed quoted prose such as `--ac "Clear on blur, not on change"`
+into two values. Shell quoting already establishes the intended boundary.
 
 ## Decision
 
-Add **comma-separated** values and keep repetition. The two compose. Deliberately
-**reject** greedy space-separated.
+Each option occurrence contributes one element by default, for every supported
+array element type. Commands can explicitly declare `.delimiter = ','` (or
+another non-whitespace, non-NUL byte) in per-option metadata to enable list syntax.
 
-Every value token of an array-typed option is split on `,`:
-
-```
---tag a,b          →  [a, b]
---tag=a,b   -t a,b →  [a, b]        (equals and short forms too)
---tag a,b --tag c  →  [a, b, c]     (composes with repetition)
---tag a,,b         →  value error   (empty segment rejected: also ,a and a,)
+```zig
+pub const meta = .{ .options = .{
+    .tags = .{ .delimiter = ',', .short = 't' },
+} };
 ```
 
-A literal comma is therefore always a separator for array options — it cannot
-appear inside an element. Scalar (non-array) options are untouched: a comma stays a
-literal character in their single value. `--help` marks array options `(repeatable)`.
+For a literal repeatable option:
 
-## Why not greedy space-separated
+```
+--ac "a, b" --ac c   → ["a, b", "c"]
+--ac=                → [""]
+```
 
-Greedy consumption is fundamentally **ambiguous with zcli's interleaved
-positionals.** zcli is GNU-style: options and positionals may appear in any order
-(`packages/core/src/options/parser.zig`). A greedy array option would swallow any
-following non-flag token — including intended positionals. For a command with both
-`tags: [][]const u8` and a positional `file`, `--tags a file.txt` means
-`tags=[a], file="file.txt"` today; greedy would silently change it to
-`tags=[a, "file.txt"]`. So greedy is **not additive** — it changes the meaning of
-existing command lines — whereas comma is additive (only a literal comma in a value
-changes meaning).
+For an explicitly delimited option:
 
-This is not a zcli-specific worry. Every framework that offers greedy multi-value
-documents the hazard: Rust `clap`'s `num_args(1..)` is opt-in with an explicit
-"does not get along with trailing positionals/subcommands" warning (clap #1721), and
-Python `argparse`'s `nargs='+'` is the canonical source of "my positional
-disappeared" bugs. The dominant server/cloud ecosystem (Go `pflag` →
-kubectl/docker/helm/Hashicorp) settled on exactly **comma + repetition** and does not
-do greedy space. We follow that convention.
+```
+--tags a,b --tags c  → ["a", "b", "c"]
+--tags=a,b -t c,d    → ["a", "b", "c", "d"]
+--tags a,,b         → value error (also ,a and a,)
+```
 
-## Consequences
+Long, short, attached, equals, and bundled forms have equivalent behavior.
+Delimiters do not trim whitespace or implement CSV quoting or escaping. Types
+control element conversion; metadata controls token splitting. Structured config
+arrays retain their supplied element boundaries. Help marks array options
+repeatable and explicitly shows their delimiter when declared.
 
-- **Purely additive parse change.** Splitting happens inside the array value-append
-  path (`options/array_utils.zig`); the two-layer parse (the `command_parser.zig`
-  pre-split, then `options/parser.zig`) still routes exactly one value token per
-  option occurrence, so the layers stay in agreement with no change to either's
-  boundary logic, `--` handling, negative-number handling, or positional parsing.
-- **The comma-in-value tradeoff.** A value that must contain a literal comma cannot
-  use this syntax. This mirrors pflag `StringSlice` and is acceptable: comma-bearing
-  values are rare, and repetition remains available for any single value (though its
-  tokens are split too — the rule is uniform).
-- **No scaffold change.** `zcli add option --multiple` already emits array fields;
-  comma parsing is a parse-time capability of any array option.
+Greedy space-separated consumption remains unsupported. In zcli's interleaved
+syntax, `--tags a file.txt` must leave `file.txt` available as a positional; an
+array flag cannot consume an arbitrary number of following tokens.
+
+## Migration
+
+This supersedes the original unconditional-comma decision. Commands that
+intentionally support comma syntax must add `.delimiter = ','`. Commands with
+repeatable prose gain literal boundary preservation without metadata. Existing
+CLI usage involving commas changes unless its declaration opts in.

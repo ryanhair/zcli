@@ -1,0 +1,8 @@
+.{
+    .name = .metadata_fixture,
+    .version = "0.0.0",
+    .fingerprint = 0x979490168b54d079,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{ .zcli = .{ .path = "../../../../.." } },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

@@ -42,6 +42,38 @@ const pw = try p.password(.{
 | `number` | numeric input with optional `min`/`max`, validation inline | the parsed number |
 | `editor` | opens `$EDITOR` on a seeded temp file | the edited text |
 
+## Explicit editing
+
+For an edit command, open immediately with the reusable editor operation:
+
+```zig
+const p = context.prompts();
+var result = try p.edit(.{
+    .io = context.io,
+    .environ = context.environ,
+    .default = existing_document,
+    .extension = ".md",
+});
+defer result.deinit(context.allocator);
+
+switch (result) {
+    .edited => |content| try save(content),
+    .failed => |failure| {
+        if (failure.recovery_path) |path|
+            try context.stderr().print("Content preserved at {s}\n", .{path});
+        return error.EditCancelled;
+    },
+}
+```
+
+The editor opens on a controlling terminal even when stdout is redirected. Its UI never goes into the command's redirected output. Missing terminals, launch failures, unsuccessful termination and read-back failures are distinct structured failures. Successful editing returns exact bytes: trailing newlines, unchanged text and empty documents are valid.
+
+Supply `.argv = &.{ "code", "--wait" }` for explicit program configuration. Otherwise the operation uses nonempty `$VISUAL`, then `$EDITOR`, then `vi` (`notepad` on Windows), from the supplied environment. Command strings support quotes and backslash escaping, without shell expansion or pipelines. Explicit shells work: `EDITOR="sh -c 'echo edited > \"\$1\"' --"`. Lookup uses the supplied `PATH` and the child receives the supplied environment.
+
+Scratch files are exclusive, randomized and private. They are removed on success. Changed or unreadable content is preserved on failure, with an owned `recovery_path`; calling `result.deinit` frees result memory and does not delete that file. `.recovery = .discard` deliberately disables recovery. `.max_bytes` bounds the saved document read (128 MiB default); oversized saved content remains recoverable. `.attachment = .inherit` is available explicitly for noninteractive tools or tests.
+
+The existing `p.editor` prompt still invites Enter and falls back to reading stdin when noninteractive. Set `.immediate = true` to bypass the invitation at an interactive prompt; its noninteractive stdin fallback remains unchanged. Use `p.edit` for editing with redirected stdout. It returns `EditorFailed`, `EditorLaunchFailed` or `EditorReadFailed` rather than silently returning the initial text; a recovery path is displayed when available. Choose `p.edit` when the command needs structured failure details.
+
 ## Searchable choices
 
 Set `.search = true` on `select` or `multiSelect` for a case-insensitive

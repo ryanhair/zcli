@@ -1,11 +1,13 @@
 //! `Prompts.editor` — capture multi-line input by launching an external editor.
 //!
 //! Pressing Enter opens the user's editor on a temp file seeded with `default`;
-//! whatever is saved (trailing newlines trimmed) is returned. Options:
+//! whatever is saved, including trailing newlines, is returned. Options:
 //!   * `environ`    — the editor is resolved from it (`$VISUAL`, then `$EDITOR`,
 //!                    else `vi`), and it also honours `$TMPDIR`.
 //!   * `editor_cmd` — optional override to force a specific program regardless
 //!                    of the environment.
+//!   * `immediate`  — true skips the Enter gate at an interactive prompt.
+//!   * `argv`       — explicit program and arguments; filename is appended.
 //!   * `extension`  — temp-file suffix so the editor picks the right syntax
 //!                    highlighting (`.md`, `.txt`, ...).
 //!   * `io`         — the editor spawns a child process and does file I/O, so it

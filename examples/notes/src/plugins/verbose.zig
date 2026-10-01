@@ -6,6 +6,8 @@
 
 const std = @import("std");
 const zcli = @import("zcli");
+// Project plugins receive the same shared modules as commands.
+const log = @import("log");
 
 /// Names this plugin's slot on the context. Commands — and this plugin's own
 /// hooks — read its state as `context.plugins.verbose`.
@@ -30,10 +32,8 @@ pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !v
     if (std.mem.eql(u8, name, "verbose")) context.plugins.verbose.enabled = value;
 }
 
-/// Hooks are @hasDecl-gated — declare only the ones you need. preExecute runs
-/// before every command; return the (possibly rewritten) args, or null to halt.
-pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+/// Preparation runs after input validation; informational requests skip it.
+pub fn prepare(context: anytype) !void {
     if (context.plugins.verbose.enabled)
-        try context.stderr().writeAll("[verbose] verbose mode enabled\n");
-    return args;
+        try context.stderr().print("[verbose] activity log: {s}\n", .{log.filename});
 }

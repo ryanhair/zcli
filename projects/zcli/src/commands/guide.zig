@@ -567,9 +567,11 @@ const topics = [_]Topic{
         \\  preParse         rewrite raw argv
         \\  transformArgs    rewrite args after global options are parsed
         \\  postParse        inspect/replace parsed positionals
-        \\  preExecute       run before a command (return null to halt)
-        \\  postExecute      run after (gets success: bool)
-        \\  onError          handle an error (return true if handled)
+        \\  handleInformation handle help-like requests (.proceed or .complete)
+        \\  loadConfig       load inputs before resolved-value validation
+        \\  prepare          run operational setup after validation
+        \\  onFinish         run at completion (gets success: bool)
+        \\  describeFailure  explain a failure without suppressing its status
         \\  global_options + handleGlobalOption    add a --flag and react to it
         \\
         \\Scaffold one with `zcli add plugin <name>` — the generated stub wires one
@@ -580,7 +582,7 @@ const topics = [_]Topic{
         \\slot at `context.plugins.<plugin_id>` for the run that any command reads —
         \\`if (context.plugins.verbose.enabled) ...`. Add a global flag with
         \\`global_options` + `handleGlobalOption`; the handler fires during parsing,
-        \\before preExecute and the command, so the flag is set by the time they run.
+        \\before prepare and the command, so the flag is set by the time they run.
         \\
         \\Worked example — examples/notes/src/plugins/verbose.zig:
         \\

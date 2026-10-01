@@ -30,6 +30,15 @@ const std = @import("std");
 const zcli = @import("zcli");
 const vterm = @import("vterm");
 
+/// The production argv-to-outcome lifecycle, with captured streams.
+pub const runInvocation = @import("invocation.zig").runInvocation;
+pub const InvocationOptions = @import("invocation.zig").InvocationOptions;
+pub const InvocationTestResult = @import("invocation.zig").Result;
+
+test {
+    _ = @import("invocation.zig");
+}
+
 /// Result of running a command in-process.
 pub const CommandResult = struct {
     /// Raw stdout text including ANSI escape sequences.
@@ -248,6 +257,13 @@ pub fn runCommand(
     Command.execute(args, options, &context) catch |e| {
         success = false;
         err = e;
+    };
+
+    // This remains a command-body harness, not a registry. Render a recorded
+    // context.fail explanation for assertions without running plugin policy.
+    if (err != null) if (context.failure_message) |message| {
+        try zcli.writeSanitized(context.stderr(), message);
+        try context.stderr().writeAll("\n");
     };
 
     // Get captured output
