@@ -315,11 +315,10 @@ remain ordinary I/O. An unexpected unreported error without a message or identit
 still propagates its Zig trace;
 a custom renderer that reports it suppresses that default trace.
 
-Current limitation: invalid numeric array elements and empty segments in
-explicitly delimited arrays can be logged without a structured diagnostic. The
-invocation engine then treats them as unexpected errors, exiting `1` with a Zig
-trace rather than the configured usage status. This is a known regression; do
-not rely on the usage status for those inputs until it is fixed.
+Invalid numeric array elements and empty segments in explicitly delimited arrays
+produce structured option diagnostics and use the configured usage status, just
+like invalid scalar values. This applies to both long and short options; custom
+failure renderers receive the diagnostic through the normal invocation path.
 
 ## Memory management
 

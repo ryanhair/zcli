@@ -697,7 +697,7 @@ The policy module receives the `zcli` import from `generate()`. The command/plug
 scopes in this example assume those registered names in your app. Commands use canonical paths, so aliases share the same rule. Rules cannot
 replace framework misuse statuses. A mapped failure remains a failure even if
 its output is suppressed. See [ERROR_HANDLING.md](ERROR_HANDLING.md) for renderer
-signatures, scope validation, and the current array-diagnostic limitation.
+signatures and scope validation.
 
 Typed command-specific plugin settings require no new build option: register
 the plugin normally, declare its `CommandConfig`, and use command

@@ -60,6 +60,72 @@ test "outcomes retain framework provenance and owned structured diagnostics" {
     try testing.expectEqual(@as(u8, 65), unknown.status);
 }
 
+test "invalid array options produce owned usage diagnostics and configured statuses" {
+    const Command = struct {
+        pub const Args = struct {};
+        pub const Options = struct {
+            ports: []u16 = &.{},
+            tags: [][]const u8 = &.{},
+        };
+        pub const meta = .{ .options = .{
+            .ports = .{ .short = 'p' },
+            .tags = .{ .short = 't', .delimiter = ',' },
+        } };
+        var executed = false;
+        pub fn execute(_: Args, _: Options, _: anytype) !void {
+            executed = true;
+        }
+    };
+    const Case = struct { flag: []const u8, value: []const u8, name: []const u8, short: bool };
+    const cases = [_]Case{
+        .{ .flag = "--ports", .value = "bad", .name = "ports", .short = false },
+        .{ .flag = "-p", .value = "70000", .name = "p", .short = true },
+        .{ .flag = "--tags", .value = "a,,b", .name = "tags", .short = false },
+        .{ .flag = "-t", .value = "a,", .name = "t", .short = true },
+    };
+    inline for (.{ @as(u8, 2), @as(u8, 64) }) |usage_status| {
+        const App = zcli.Registry.init(.{ .app_name = "test", .app_version = "1", .app_description = "", .exit_codes = if (usage_status == 2) .{} else .{ .usage = usage_status } })
+            .register("array", Command).build();
+        var app = App.init();
+        for (cases) |case| {
+            var capture: Capture = undefined;
+            capture.init();
+            defer capture.deinit();
+            Command.executed = false;
+            var result = try capture.invoke(&app, &.{ "array", case.flag, case.value });
+            defer result.deinit();
+            try testing.expectEqual(usage_status, result.status);
+            try testing.expect(!Command.executed);
+            const failure = result.outcome.failure;
+            try testing.expect(failure.isUsage());
+            try testing.expectEqual(zcli.failure.Origin.framework, failure.origin);
+            try testing.expectEqual(error.OptionInvalidValue, failure.cause);
+            const diag = failure.diagnostic.?.OptionInvalidValue;
+            try testing.expectEqualStrings(case.name, diag.option_name);
+            try testing.expectEqualStrings(case.value, diag.provided_value);
+            try testing.expectEqual(case.short, diag.is_short);
+            try testing.expect(std.mem.indexOf(u8, capture.err.written(), case.value) != null);
+            try testing.expect(std.mem.indexOf(u8, capture.err.written(), "for usage") != null);
+            try testing.expectEqual(@as(usize, 0), capture.out.written().len);
+        }
+    }
+    const ArrayPolicy = struct {
+        pub fn renderFailure(ctx: anytype, failure: zcli.Failure, status: u8) !void {
+            const diag = failure.diagnostic.?.OptionInvalidValue;
+            try ctx.stderr().print("{{\"option\":\"{s}\",\"value\":\"{s}\",\"status\":{d}}}\n", .{ diag.option_name, diag.provided_value, status });
+        }
+    };
+    const JsonApp = zcli.Registry.init(.{ .app_name = "test", .app_version = "1", .app_description = "", .failure_policy = ArrayPolicy, .exit_codes = .{ .usage = 64 } })
+        .register("array", Command).build();
+    var json_app = JsonApp.init();
+    var capture: Capture = undefined;
+    capture.init();
+    defer capture.deinit();
+    var result = try capture.invoke(&json_app, &.{ "array", "--tags", "a,,b" });
+    defer result.deinit();
+    try testing.expectEqualStrings("{\"option\":\"tags\",\"value\":\"a,,b\",\"status\":64}\n", capture.err.written());
+}
+
 const Lifecycle = struct {
     pub const plugin_id = "lifecycle";
     pub const ContextData = struct { json: bool = false, help: bool = false };

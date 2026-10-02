@@ -19,6 +19,13 @@ def run(args, code, contains=None, **kwargs):
     return result
 
 run(["check", "--bogus"], 64, b"Unknown option")
+for flag, value in [("--ports", "bad"), ("-p", "70000"), ("--tags", "a,,b"), ("-t", "a,")]:
+    invalid = run(["check", "output", flag, value], 64, value.encode())
+    assert b"for usage" in invalid.stderr, invalid.stderr
+    assert invalid.stderr.count(b"Invalid value") == 1, invalid.stderr
+    assert b"error:" not in invalid.stderr, invalid.stderr
+    assert b".zig:" not in invalid.stderr, invalid.stderr
+    assert invalid.stdout == b"", invalid.stdout
 run(["check"], 64, b"Missing required argument")
 run(["absent"], 65, b"Unknown command")
 assert run(["check", "mapped"], 9).stderr == b"record missing\n"

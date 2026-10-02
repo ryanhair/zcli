@@ -37,6 +37,14 @@ All notable changes to zcli are documented here.
 - Plugins can declare typed per-command configuration with defaults. Commands
   override it by plugin namespace; aliases retain their target's configuration.
 
+### Fixed
+
+- Interactive test expectations recognize output already captured by a previous
+  step, avoiding false timeouts when multiple expected messages arrive together.
+- Invalid array option values and empty delimited segments produce structured
+  usage diagnostics and honor the configured usage exit status, without a Zig
+  error trace.
+
 ## v0.25.0 — 2026-08-24
 
 ### Added
