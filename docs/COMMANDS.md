@@ -104,5 +104,6 @@ is 16 MiB, configurable with `GenerateConfig.stdin_max_bytes`. Help/version do
 not consume the stream. Standalone parsing records the request but performs no
 I/O; test resolution with `runInvocation`. See [ADR-0037](adr/0037-stdin-text-input.md).
 
-For the current invalid-array diagnostic limitation, see
-[Error Handling](ERROR_HANDLING.md#known-array-validation-limitation).
+Invalid array elements and empty delimited segments produce structured usage
+diagnostics and use the configured usage exit status. See
+[Error Handling](ERROR_HANDLING.md).

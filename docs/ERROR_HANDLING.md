@@ -4,7 +4,7 @@
 > orientation; the website is the single source of truth for the error model
 > and the standalone-parsing API.
 
-The framework parses and validates arguments and options before `execute()` runs, renders structured diagnostics, and picks the exit code. The current array-validation exception is documented [below](#known-array-validation-limitation). A mistyped option or command gets a "did you mean?" suggestion computed by edit distance — the same machinery your commands get for free:
+The framework parses and validates arguments and options before `execute()` runs, renders structured diagnostics, and picks the exit code. A mistyped option or command gets a "did you mean?" suggestion computed by edit distance — the same machinery your commands get for free:
 
 ```
 $ myapp deploy --verbos
@@ -101,13 +101,3 @@ classifies an otherwise unexpected error as an application failure.
 `invoke()`/`invokeWithStdio()` return the owned result instead of exiting.
 Their argv excludes the executable name; `run()` receives the complete process
 argv and removes that first element.
-
-## Known array-validation limitation
-
-Invalid numeric array elements and empty segments of explicitly delimited arrays
-currently log from the array parser without attaching a structured diagnostic.
-The invocation engine consequently categorizes these failures as unexpected:
-with no custom renderer they exit `1` with a Zig trace, rather than using the
-configured usage status. This affects both long and short options. It is a known
-regression, not the intended array-input contract; scalar usage diagnostics are
-unaffected. Do not rely on usage-code remapping covering those array errors yet.

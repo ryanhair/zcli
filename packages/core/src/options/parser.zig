@@ -287,6 +287,35 @@ pub fn parseOptionsWithMeta(
     };
 }
 
+/// Attach a diagnostic only for invalid input; allocation failures retain their
+/// system-error classification. Both option spellings share the same path.
+fn appendArrayValue(
+    comptime ElementType: type,
+    comptime delimiter: ?u8,
+    allocator: std.mem.Allocator,
+    list: *array_utils.ArrayListUnion,
+    value: []const u8,
+    option_name: []const u8,
+    is_short: bool,
+    diag: ?*?ZcliDiagnostic,
+) !void {
+    const appended = if (delimiter) |separator|
+        array_utils.appendDelimitedToArrayListUnion(ElementType, allocator, list, value, option_name, separator)
+    else
+        array_utils.appendToArrayListUnion(ElementType, allocator, list, value, option_name);
+    appended catch |err| {
+        if (err == error.InvalidOptionValue) {
+            if (diag) |d| d.* = .{ .OptionInvalidValue = .{
+                .option_name = option_name,
+                .is_short = is_short,
+                .provided_value = value,
+                .expected_type = diagnostic_errors.expectedTypeName(ElementType),
+            } };
+        }
+        return err;
+    };
+}
+
 /// Convert long option parsing errors to structured errors
 fn convertLongOptionError(err: anyerror) ZcliError {
     return switch (err) {
@@ -541,11 +570,7 @@ fn applyLongOption(
                 // Handle array accumulation
                 const element_type = @typeInfo(field.type).pointer.child;
                 if (array_lists[i]) |*list_union| {
-                    if (comptime utils.delimiterForField(meta, field.name)) |delimiter| {
-                        try array_utils.appendDelimitedToArrayListUnion(element_type, allocator, list_union, value, option_name, delimiter);
-                    } else {
-                        try array_utils.appendToArrayListUnion(element_type, allocator, list_union, value, option_name);
-                    }
+                    try appendArrayValue(element_type, utils.delimiterForField(meta, field.name), allocator, list_union, value, option_name, false, diag);
                 }
             } else {
                 stdin_requested[i] = (comptime utils.stdinForField(meta, field.name)) and std.mem.eql(u8, value, "-");
@@ -663,11 +688,7 @@ fn applyShortBundle(
                                 // For array types, accumulate values
                                 if (array_lists.*[i]) |*list_union| {
                                     const element_type = @typeInfo(field.type).pointer.child;
-                                    if (comptime utils.delimiterForField(meta, field.name)) |delimiter| {
-                                        try array_utils.appendDelimitedToArrayListUnionShort(element_type, allocator, list_union, value, char, delimiter);
-                                    } else {
-                                        try array_utils.appendToArrayListUnionShort(element_type, allocator, list_union, value, char);
-                                    }
+                                    try appendArrayValue(element_type, utils.delimiterForField(meta, field.name), allocator, list_union, value, chars[v.index .. v.index + 1], true, diag);
                                 }
                             } else {
                                 stdin_requested[i] = (comptime utils.stdinForField(meta, field.name)) and std.mem.eql(u8, value, "-");
@@ -2023,4 +2044,26 @@ test "stdin requests are CLI-only and follow final scalar value" {
     const from_env = try parseOptionsWithMeta(O, meta, std.testing.allocator, &env, &.{}, null);
     try std.testing.expect(!from_env.stdin_requested[0]);
     try std.testing.expectEqualStrings("-", from_env.options.goal.?);
+}
+
+test "array allocation failures have no usage diagnostic" {
+    const Options = struct {
+        ports: []u16 = &.{},
+        tags: [][]const u8 = &.{},
+    };
+    const meta = .{ .options = .{
+        .ports = .{ .short = 'p' },
+        .tags = .{ .short = 't', .delimiter = ',' },
+    } };
+    const cases = [_][2][]const u8{
+        .{ "--ports", "42" }, .{ "-p", "42" },
+        .{ "--tags", "a,b" }, .{ "-t", "a,b" },
+    };
+    for (cases) |args| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+        var diag: ?ZcliDiagnostic = null;
+        try std.testing.expectError(error.SystemOutOfMemory, parseOptionsWithMeta(Options, meta, failing.allocator(), null, &args, &diag));
+        try std.testing.expect(failing.has_induced_failure);
+        try std.testing.expect(diag == null);
+    }
 }

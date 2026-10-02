@@ -1,7 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");
-const logging = @import("../logging.zig");
 
 // Union type to handle different ArrayList types for array accumulation
 // Now much cleaner with generic helper functions doing the heavy lifting
@@ -63,50 +62,35 @@ fn getFieldName(comptime T: type) []const u8 {
 }
 
 /// Generic helper to append a value to an ArrayListUnion
-/// Replaces ~80 lines of repetitive switch cases with clean generic code
-pub fn appendToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
+/// Returns errors without writing diagnostics; the parser owns reporting.
+pub fn appendToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, _: []const u8) !void {
     switch (comptime ElementType) {
         []const u8 => try list_union.strings.append(allocator, value),
         inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {
             const field_name = comptime getFieldName(T);
-            const parsed = utils.parseOptionValue(T, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
+            const parsed = try utils.parseOptionValue(T, value);
             try @field(list_union, field_name).append(allocator, parsed);
         },
         else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
     }
 }
 
-/// Generic helper to append a value to an ArrayListUnion (for short options)
-/// Replaces ~80 lines of repetitive switch cases with clean generic code
+/// Short-option entry point sharing the same value parsing as long options.
 pub fn appendToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8) !void {
-    switch (comptime ElementType) {
-        []const u8 => try list_union.strings.append(allocator, value),
-        inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {
-            const field_name = comptime getFieldName(T);
-            const parsed = utils.parseOptionValue(T, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            try @field(list_union, field_name).append(allocator, parsed);
-        },
-        else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
-    }
+    _ = char;
+    return appendToArrayListUnion(ElementType, allocator, list_union, value, "");
 }
 
 /// Split a single option token on the declared delimiter and append each
 /// element. Array values are literal unless the command opts into this syntax.
 /// An empty segment (`a,,b`, `,a`, `a,`) is rejected as an invalid value.
 /// Delegates to `appendToArrayListUnion` per segment, reusing its per-element
-/// parsing and diagnostics unchanged.
+/// parsing. The caller supplies structured diagnostics for invalid values.
 ///
 pub fn appendDelimitedToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8, delimiter: u8) !void {
     var it = std.mem.splitScalar(u8, value, delimiter);
     while (it.next()) |segment| {
         if (segment.len == 0) {
-            logging.invalidOptionValue(option_name, value, "value");
             return error.InvalidOptionValue;
         }
         try appendToArrayListUnion(ElementType, allocator, list_union, segment, option_name);
@@ -115,14 +99,8 @@ pub fn appendDelimitedToArrayListUnion(comptime ElementType: type, allocator: st
 
 /// Delimited append for short options (see `appendDelimitedToArrayListUnion`).
 pub fn appendDelimitedToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8, delimiter: u8) !void {
-    var it = std.mem.splitScalar(u8, value, delimiter);
-    while (it.next()) |segment| {
-        if (segment.len == 0) {
-            logging.invalidShortOptionValue(char, value, "value");
-            return error.InvalidOptionValue;
-        }
-        try appendToArrayListUnionShort(ElementType, allocator, list_union, segment, char);
-    }
+    _ = char;
+    return appendDelimitedToArrayListUnion(ElementType, allocator, list_union, value, "", delimiter);
 }
 
 // Compatibility helpers for direct callers. The parser uses the opt-in
