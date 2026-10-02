@@ -112,7 +112,7 @@ try std.testing.expectEqual(@as(u8, 0), result.invocation.status);
 
 Use this harness for configured failure statuses and hook failures; retain
 subprocess tests for the final process exit and PTY tests for editor attachment.
-See [CLI migration](../../docs/CLI_MIGRATION.md) for failure ownership and policy.
+See [Error handling](../../docs/ERROR_HANDLING.md) for failure ownership and policy.
 
 ## Behavior notes
 

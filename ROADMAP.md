@@ -10,17 +10,12 @@ whether to adopt today or wait.
 
 It is a statement of *intent*, not a delivery contract. **There is no 1.0 date.**
 The freeze list below is the ratified plan for what 1.0 will promise when it
-happens. The next minor includes another breaking CLI-experience update (§3);
+happens. The invocation and input/output contracts are still settling (§3);
 1.0 ships when the maintainer judges the frozen surfaces have settled — not before.
 
 ## 1. Where zcli is today
 
 Current release: **v0.25.0** (Zig 0.16.0, Linux/macOS/Windows).
-
-The next minor adds the [CLI experience migration](docs/CLI_MIGRATION.md): new
-plugin lifecycle and failure-policy contracts, literal repeatable values by
-default, and revised editor behavior. The descriptions below include that
-unreleased work; v0.25.0 retains the previous contracts.
 
 The framework is exercised by its own
 meta-CLI (`zcli init/add/mv/rm/tree/dev/guide/release` are all zcli commands) and
@@ -124,14 +119,13 @@ these are final.
 1.0 is a *stability* declaration, not a feature gate, so the bar for an item here
 is "shipping this after 1.0 would be a breaking change or an integrity gap we'd
 regret freezing around." **1.0 is deliberately not scheduled.** The freeze follows
-released use of the latest breaking changes, once the surfaces in §2 have settled.
+validation of the documented contracts, once the surfaces in §2 have settled.
 
 **Blockers (in order):**
 
-- **Let the CLI-experience contracts settle.** The next minor redesigns the
-  invocation and plugin lifecycle, array delimiter defaults, and editor
-  behavior (ADRs 0024 and 0036–0040). These need released use before freezing
-  §2. The earlier progress/prompts and UI rebuild shipped in v0.20.0.
+- **Let the CLI-experience contracts settle.** Validate the invocation and
+  plugin lifecycle, array delimiters, and editor behavior (ADRs 0024 and
+  0036–0040) before freezing §2.
 - **A final API sweep of the freeze list in §2.** One pass to rename/remove
   anything awkward *while it's still free* — the project's stated preference is
   "never prioritize backwards compatibility pre-1.0; make the cleanest choice."
@@ -174,7 +168,7 @@ lockstep.
 **Post-1.0:** Standard semver. Breaking changes to the frozen surfaces in §2
 require a major bump. Additive changes (new widgets, new plugins, new theme
 tokens, new `meta` keys) are minor. Fixes are patch. Every release keeps the
-CHANGELOG's per-entry migration notes.
+CHANGELOG's per-entry API notes.
 
 **Zig-version coupling** — this is the one place a dependency's instability can
 reach through a "stable" zcli, so it gets an explicit rule:
@@ -201,7 +195,7 @@ reach through a "stable" zcli, so it gets an explicit rule:
 
 ## 5. How to bet on zcli today
 
-You can build on zcli now, with the pre-1.0 migration work described in §3.
+You can build on zcli now, with the pre-1.0 API work described in §3.
 To insulate yourself:
 
 - **Pin a release tag** with its immutable hash — never track `main` in a project
@@ -212,19 +206,11 @@ To insulate yourself:
   (`main`'s hash changes every commit; that's for trying the development branch,
   not depending on it.)
 - **Read the CHANGELOG entry before every upgrade.** Breaking changes pre-1.0 are
-  always listed there with migration notes, and only ever in minor/major bumps —
+  always listed there with API notes, and only ever in minor/major bumps —
   patch upgrades are always safe.
-- **Budget for behavior review as well as compilation fixes.** The next minor
-  requires assigning old hook responsibilities to distinct stages, reviewing
-  repeatable options for explicit delimiters, and handling editor outcomes.
-  The `meta`/`Args`/`Options`/`execute` shape remains, but passing the compiler
-  alone does not verify your app's argument and exit-status contracts.
-- **The meta-CLI helps you migrate.** `zcli guide` is version-matched to your
-  pinned release, and `zcli dev`/`tree` surface breakage fast on upgrade.
 
 If you need a hard source-stability guarantee *today*, wait for 1.0 —
-that's precisely the line this document exists to draw. If you can absorb a small,
-well-documented migration once per minor, the core is ready to build on now.
+that's precisely the line this document exists to draw. The documented APIs remain subject to change before that freeze.
 
 ---
 

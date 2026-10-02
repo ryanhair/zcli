@@ -19,7 +19,7 @@ The default exit codes are: `0` success, `2` misuse (a bad/unknown/missing optio
 
 Configure `.exit_codes = .{ .usage = 64, .command_not_found = 64 }` in
 `GenerateConfig` to change framework statuses. An application failure policy can
-map domain errors and render structured output; see [the migration guide](CLI_MIGRATION.md).
+map domain errors and render structured output; see [build configuration](BUILD.md#invocation-policy-configuration).
 `Failure.isUsage()` classifies retained failures by origin rather than a copied
 list of Zig error names.
 

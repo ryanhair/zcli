@@ -118,13 +118,7 @@ production outcome and status. Process tests verify the final exit boundary; PTY
 tests verify interactions requiring a terminal. Tests do not reimplement routing,
 resolution, hook sequencing, or error classification.
 
-## Migration and consequences
-
-This is a minor-release breaking change. Legacy `onError` suppression cannot be
-silently redefined to mean rendering. Built-in help/version, config, not-found, and
-upgrade handling migrate with the registry. Plugin authors receive explicit
-migration instructions for informational completion, input loading, preparation,
-and failure description/rendering.
+## Consequences
 
 `context.exit()` remains an immediate escape hatch and cannot promise normal
 cleanup or in-process interception. Normal framework-owned paths return outcomes

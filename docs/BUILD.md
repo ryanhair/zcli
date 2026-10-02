@@ -134,7 +134,7 @@ precedes `preParse`. Initialization and startup must stay safe for help/version.
 All fallible hooks use the same failure path. Renderer hooks run only once global
 option handling is complete, so earlier failures use human fallback.
 
-See [the migration guide](CLI_MIGRATION.md) and [ADR-0036](adr/0036-invocation-outcomes.md)
+See [error handling](ERROR_HANDLING.md) and [ADR-0036](adr/0036-invocation-outcomes.md)
 for failure precedence, cleanup, and application status policy.
 
 ### Plugin Integration

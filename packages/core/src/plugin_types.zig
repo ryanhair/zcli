@@ -329,9 +329,6 @@ pub fn validatePlugin(comptime Plugin: type) void {
         // headroom above the 1000 default so adding a hook name never trips it.
         @setEvalBranchQuota(10_000);
         if (@typeInfo(Plugin) != .@"struct") return;
-        if (@hasDecl(Plugin, "preExecute")) @compileError("preExecute was replaced: use prepare(context) after validation, loadConfig(context) for input defaults, or handleInformation(context) for successful completion");
-        if (@hasDecl(Plugin, "postExecute")) @compileError("postExecute was replaced by onFinish(context, success), which runs for every initialized invocation");
-        if (@hasDecl(Plugin, "onError")) @compileError("onError was replaced: describeFailure supplies diagnostic data; renderFailure reports failure without converting it into success; use handleInformation for help/version");
         for (@typeInfo(Plugin).@"struct".decls) |decl| {
             if (isContractName(decl.name)) continue;
             // Only functions can be hooks; consts near a hook name are inert.

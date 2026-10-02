@@ -20,7 +20,7 @@ deployctl export --output state.txt --format text
 Each `--tag` occurrence is one literal value: `--tag "owner=a,b" --tag env=prod`
 produces two entries. Array options only split values when their metadata declares
 an explicit `.delimiter` (for example, `.delimiter = ','`); it is not the default.
-See [CLI migration](../../docs/CLI_MIGRATION.md) for delimiter and explicit stdin
+See [Commands](../../docs/COMMANDS.md#repeatable-options-and-stdin-text) for delimiter and explicit stdin
 text options.
 
 ## Build

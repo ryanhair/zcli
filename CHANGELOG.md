@@ -15,8 +15,7 @@ All notable changes to zcli are documented here.
   Plugin informational handling, input loading, and operational preparation have
   distinct lifecycle stages. Application failures are described and rendered
   through the same path as framework diagnostics; `context.fail()` records its
-  explanation instead of printing immediately. `preExecute`, `postExecute`, and
-  `onError` have explicit replacements; see [the migration guide](https://zcli.sh/docs/migration/).
+  explanation for rendering during invocation finalization.
 - Editor operations report unsuccessful editor termination instead of returning
   the original document, and preserve successful content without stripping trailing
   newlines.

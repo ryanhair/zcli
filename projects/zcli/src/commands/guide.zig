@@ -174,7 +174,7 @@ const topics = [_]Topic{
         \\
         \\invoke and invokeWithStdio return owned InvocationResult values without
         \\exiting; release them with deinit(). run applies the final process status.
-        \\See docs/ERROR_HANDLING.md and docs/CLI_MIGRATION.md for complete examples.
+        \\See docs/ERROR_HANDLING.md and docs/BUILD.md for complete examples.
         \\
         ,
     },

@@ -44,10 +44,3 @@ repeatable and explicitly shows their delimiter when declared.
 Greedy space-separated consumption remains unsupported. In zcli's interleaved
 syntax, `--tags a file.txt` must leave `file.txt` available as a positional; an
 array flag cannot consume an arbitrary number of following tokens.
-
-## Migration
-
-This supersedes the original unconditional-comma decision. Commands that
-intentionally support comma syntax must add `.delimiter = ','`. Commands with
-repeatable prose gain literal boundary preservation without metadata. Existing
-CLI usage involving commas changes unless its declaration opts in.

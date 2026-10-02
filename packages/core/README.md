@@ -55,5 +55,5 @@ All of these also run from the repo root: `zig build test-core` aggregates the `
 - [docs/DESIGN.md](../../docs/DESIGN.md) — architecture and runtime design
 - [docs/BUILD.md](../../docs/BUILD.md) — the codegen pipeline
 - [zcli.sh/testing](https://zcli.sh/testing/) — the testing tiers
-- [docs/CLI_MIGRATION.md](../../docs/CLI_MIGRATION.md) — invocation outcomes, lifecycle, input syntax, editor, tables, and typed plugin configuration
+- [docs/ERROR_HANDLING.md](../../docs/ERROR_HANDLING.md) — invocation outcomes, failure ownership, and application exit policy
 - [docs/adr/](../../docs/adr/) — the decision record

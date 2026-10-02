@@ -8,10 +8,6 @@
 
 zcli is a batteries-included framework for building polished command-line apps in Zig. Drop a `.zig` file in `commands/` and it becomes a command — help text, shell completions, typo suggestions, and typed argument parsing are generated at compile time. One dependency, one self-contained binary.
 
-**Upgrading from v0.25.0?** The next minor changes plugin hooks, repeatable-option
-parsing, and editor behavior. See the [migration guide](docs/CLI_MIGRATION.md);
-these APIs are not in the v0.25.0 release pinned below.
-
 **Full documentation lives at [zcli.sh](https://zcli.sh)** — [getting started](https://zcli.sh/getting-started/), the [docs](https://zcli.sh/docs/), [plugins](https://zcli.sh/plugins/), the [CLI/TUI hybrid](https://zcli.sh/ui/), [theming](https://zcli.sh/theming/), and [building CLIs with coding agents](https://zcli.sh/ai/). This README is the tour; the site is the reference.
 
 <img alt="Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner" src="examples/tasks/demo.gif" width="600" />
@@ -222,7 +218,7 @@ For an explicit edit command, `context.prompts().edit(config)` opens the editor
 immediately, including when stdout is redirected. It returns owned edited bytes
 or structured failure and recovery information; it requires a controlling terminal.
 The `editor` prompt keeps its invitation and noninteractive stdin fallback.
-See [the editor migration](docs/CLI_MIGRATION.md#open-an-editor-directly).
+See [the editor API](packages/prompts/README.md#editing-a-document).
 
 Also: `confirm`, `multiSelect`, `number` (range-validated), and `editor` (opens `$EDITOR`). Searchable selection is `p.select(.{ .search = true, ... })` or `p.multiSelect(.{ .search = true, ... })`. Full API in [packages/prompts](packages/prompts/).
 
@@ -454,11 +450,10 @@ The trust model and the key rotation/compromise procedure live in [docs/RELEASE-
 ## Stability & the road to 1.0
 
 zcli is pre-1.0: breaking changes can land in minor versions and are always
-called out in the CHANGELOG; patch versions are always safe. The core command
-contract keeps its `meta`/`Args`/`Options`/`execute` shape, but the next minor
-redesigns plugin lifecycle and failure handling, makes array delimiters opt-in,
-and changes editor failure and newline handling. Review the
-[migration guide](docs/CLI_MIGRATION.md) before upgrading.
+called out in the CHANGELOG; patch versions are always safe. The command
+contract is `meta`/`Args`/`Options`/`execute`; lifecycle and failure-policy
+contracts are documented in [docs/PLUGINS.md](docs/PLUGINS.md) and
+[docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
 
 If you're evaluating whether to adopt now or wait, [ROADMAP.md](ROADMAP.md) lays
 out what freezes at 1.0, what stays deliberately open, what must land first, and

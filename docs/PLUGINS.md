@@ -138,7 +138,3 @@ rendering, or `false` to let another renderer handle it. The application policy
 renderer has a different signature and precedence; it owns output with
 `renderFailure(context, failure, status) !void`. Both run only after global
 handling succeeds. See [ERROR_HANDLING.md](ERROR_HANDLING.md#rendering-and-unexpected-errors).
-
-Legacy `preExecute`, `postExecute`, and `onError` exports are rejected at compile
-time. Use `prepare`, `onFinish`, and the description/rendering interfaces instead;
-see [CLI_MIGRATION.md](CLI_MIGRATION.md) for the complete migration.

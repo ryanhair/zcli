@@ -459,7 +459,7 @@ pub const GenerateConfig = struct {
     /// Nonzero statuses for usage, unknown commands, and explained command failures.
     exit_codes: @import("../failure.zig").ExitCodes = .{},
     /// Application error_codes, describeFailure, and/or renderFailure declarations.
-    /// The module receives a zcli import; see docs/CLI_MIGRATION.md for signatures.
+    /// The module receives a zcli import; see docs/ERROR_HANDLING.md for signatures.
     failure_policy_module: ?*std.Build.Module = null,
 };
 
