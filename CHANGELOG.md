@@ -39,6 +39,9 @@ All notable changes to zcli are documented here.
 
 ### Fixed
 
+- Command moves preserve user source content and reject invalid source before
+  creating destination directories. Atomic writes preserve existing permissions,
+  honor umask for new files, and refuse occupied move destinations.
 - Interactive test expectations recognize output already captured by a previous
   step, avoiding false timeouts when multiple expected messages arrive together.
 - Invalid array option values and empty delimited segments produce structured
