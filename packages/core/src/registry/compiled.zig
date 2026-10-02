@@ -18,20 +18,13 @@ const Config = builder.Config;
 const CommandEntry = builder.CommandEntry;
 const discoverPluginCommands = builder.discoverPluginCommands;
 
-/// Default rendering for a parse error no plugin handled: the diagnostic's
-/// precise, human-readable message on stderr (flushed — the process is about
-/// to exit with an error). Falls back silently when no diagnostic was filled
-/// (the error name still reaches the caller).
+/// Default human-readable rendering for a retained parser diagnostic. Invocation
+/// finalization selects the status separately; rendering does not exit the process.
+/// If no diagnostic was filled, this function produces no output.
 ///
-/// Every write here is best-effort (`catch {}`), never `try` (#740). Rendering
-/// the diagnostic is cosmetic; classifying the error is not. A `try` on any of
-/// these — the trailing `flush` above all, since a sub-4KB diagnostic only
-/// touches the fd there — replaces the caller's classified parse error with
-/// `error.WriteFailed`, so `myapp --bogus 2>&-` exits 1 (general failure)
-/// instead of 2 (misuse) and scripts that key on 2 break. A stderr that
-/// genuinely failed is still not lost: the writer records it, and `run()`
-/// consults that record (see `exitOnWriteFailure`) — but only for a failure
-/// nothing else classified, so the parse error keeps its status either way.
+/// Diagnostic writes are best-effort so a closed stderr cannot replace the
+/// primary usage failure with WriteFailed. Finalization records stream failures
+/// and applies I/O status precedence only when no primary failure already exists.
 fn reportParseError(context: anytype, diag: ?zcli.ZcliDiagnostic) !void {
     const d = diag orelse return;
     const message = zcli.formatDiagnostic(d, context.allocator) catch return;
@@ -66,160 +59,6 @@ fn convertGlobalValue(comptime T: type, value: []const u8) !T {
     if (T == bool) return std.mem.eql(u8, value, "true");
     return option_utils.parseOptionValue(T, value);
 }
-
-/// Errors that execute() reports to the user before returning them — the
-/// user-facing message has already been printed by the time these surface.
-fn isReportedCliError(err: anyerror) bool {
-    return switch (err) {
-        error.CommandNotFound,
-        error.SubcommandNotFound,
-        error.OptionUnknown,
-        error.OptionMissingValue,
-        error.OptionInvalidValue,
-        error.OptionBooleanWithValue,
-        error.OptionDuplicate,
-        error.OptionMissingRequired,
-        // Cross-field constraint violations (ADR-0022) and per-field validation
-        // failures also print their own diagnostic via reportParseError, so they
-        // exit cleanly like every other reported parse error.
-        error.OptionMutuallyExclusive,
-        error.OptionMissingDependency,
-        error.OptionValidationFailed,
-        error.ArgumentMissingRequired,
-        error.ArgumentInvalidValue,
-        error.ArgumentTooMany,
-        error.ArgumentValidationFailed,
-        error.ResourceLimitExceeded,
-        // A command that failed via context.fail() already printed its own
-        // user-facing message; exit non-zero without the name/trace.
-        error.CommandFailed,
-        // A `@file` response file that couldn't be used is CLI misuse: the
-        // message (naming the file) was already printed at the parse front.
-        error.ResponseFileUnreadable,
-        error.ResponseFileTooLarge,
-        => true,
-        else => false,
-    };
-}
-
-/// Process exit status for a reported CLI error, following the conventional
-/// sysexits-flavoured split most CLIs use:
-///   2 — misuse: the argv itself is wrong (bad/unknown/missing options and
-///       arguments, constraint and validation failures). The user should fix
-///       the command line.
-///   3 — the named (sub)command doesn't exist at all.
-///   1 — a general failure the command itself reported via context.fail(): the
-///       command was well-formed, but the work couldn't be done.
-/// Caller must have already established `isReportedCliError(err)` is true.
-fn exitCodeForReportedError(err: anyerror) u8 {
-    return switch (err) {
-        error.CommandNotFound,
-        error.SubcommandNotFound,
-        => 3,
-        error.CommandFailed => 1,
-        // Everything else reported is CLI misuse (see isReportedCliError).
-        else => 2,
-    };
-}
-
-/// End the process for output that never landed, or return and let the caller
-/// carry on when every byte did (#731).
-///
-/// The final drain is `executeWithStdio`'s `defer stdio.flush()`, which cannot
-/// propagate an error out of a `defer` — so it records the cause on the writer
-/// and `Stdio.writeError()` reads it back. Before #731 that record was only
-/// ever consulted for EPIPE, which meant ENOSPC / EIO / EBADF on a sub-4KB run
-/// (output that fits the 4096-byte buffer never forces an earlier drain)
-/// exited 0 having written nothing at all: silent data loss reported as
-/// success.
-///
-/// For this to see a broken pipe at all, a write to a pipe whose reader has
-/// closed must *return* EPIPE rather than kill the process. On POSIX that is
-/// not something Zig's start code arranges — `std/start.zig` never touches
-/// SIGPIPE. It comes from the `std.Io` implementation: `std.Io.Threaded.init`
-/// installs a do-nothing `SIG.PIPE` handler (alongside the `SIG.IO` one it
-/// needs for cancellation), and a *handled* signal doesn't terminate, so the
-/// `write` returns EPIPE. `start.zig` builds exactly such a `Threaded` for the
-/// `io` it hands `main(init: std.process.Init)`, which is the entry point every
-/// scaffolded app uses — so the default path is covered. On Windows there is no
-/// SIGPIPE at all and a broken pipe is only ever a write error, so the one
-/// check covers both platforms.
-///
-/// The guarantee is therefore the *caller's*, not ours: `run()` takes `io` as a
-/// parameter, and an app that builds its own — `Threaded.init_single_threaded`
-/// in particular, which leaves `have_signal_handler = false` and installs
-/// nothing — keeps the process default disposition and dies by signal on the
-/// first write into a closed pipe, skipping every deferred flush and this
-/// function with it. Nothing in `std.Io`'s interface lets us detect or repair
-/// that from here, and a framework has no business rewriting process-global
-/// signal disposition behind the app's back, so it is stated rather than
-/// enforced: if you hand `run()` an io that does not neutralise SIGPIPE, EPIPE
-/// handling is off and `myapp | head` is a signal death.
-///
-/// Given EPIPE does arrive, a closed pipe keeps its established treatment: no
-/// diagnostic, the conventional SIGPIPE status. Anything else gets a one-line
-/// diagnostic and a general-failure status.
-///
-/// This is the *last* word, never the first — see `run()` for why a classified
-/// CLI error outranks it.
-fn exitOnWriteFailure(stdio: *zcli.Stdio, console: console_utf8.State) void {
-    const err = stdio.writeError() orelse return;
-    stdio.reportWriteFailure(err);
-    console.restore();
-    std.process.exit(zcli.statusForWriteError(err));
-}
-
-test "isReportedCliError: context.fail's error exits cleanly, unexpected errors don't" {
-    try std.testing.expect(isReportedCliError(error.CommandFailed));
-    try std.testing.expect(isReportedCliError(error.ArgumentMissingRequired));
-    // Constraint + validation violations self-report, so they exit cleanly too.
-    try std.testing.expect(isReportedCliError(error.OptionMutuallyExclusive));
-    try std.testing.expect(isReportedCliError(error.OptionMissingDependency));
-    try std.testing.expect(isReportedCliError(error.OptionValidationFailed));
-    try std.testing.expect(isReportedCliError(error.ArgumentValidationFailed));
-    // An unexpected failure keeps its name + trace (propagated, not swallowed).
-    try std.testing.expect(!isReportedCliError(error.OutOfMemory));
-}
-
-test "exitCodeForReportedError: misuse=2, not-found=3, general=1" {
-    // A missing/wrong command line is misuse.
-    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.OptionUnknown));
-    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.ArgumentMissingRequired));
-    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.OptionMutuallyExclusive));
-    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.ArgumentValidationFailed));
-    // A non-existent (sub)command gets its own status.
-    try std.testing.expectEqual(@as(u8, 3), exitCodeForReportedError(error.CommandNotFound));
-    try std.testing.expectEqual(@as(u8, 3), exitCodeForReportedError(error.SubcommandNotFound));
-    // A well-formed command that reported its own failure is a general error.
-    try std.testing.expectEqual(@as(u8, 1), exitCodeForReportedError(error.CommandFailed));
-}
-
-test "only an unclassified failure lets output integrity pick the status" {
-    // The hinge of `run()`'s precedence. A classified error answers with
-    // `exitCodeForReportedError` and never consults the writers, so its status
-    // survives a closed stderr (`2>&-`, #740), a closed stdout (`>&-`), and a
-    // reader that walked away (`| head`) alike — protecting exit 2 against one
-    // failed stream but not another would be arbitrary.
-    //
-    // `error.WriteFailed` is the failure nobody classified, so it — and only
-    // it — falls through to `exitOnWriteFailure`, where a broken pipe is still
-    // the conventional 141 and anything else is diagnosed lost output (#731).
-    try std.testing.expect(!isReportedCliError(error.WriteFailed));
-    try std.testing.expectEqual(zcli.broken_pipe_status, zcli.statusForWriteError(error.BrokenPipe));
-    try std.testing.expectEqual(zcli.write_failure_status, zcli.statusForWriteError(error.NoSpaceLeft));
-
-    // The sibling-API agreement (context.zig's `exitStatus` test holds the
-    // other half): with a broken pipe, `return context.fail(...)` exits 1 here
-    // — CommandFailed is classified — and `context.exit(1)` exits 1 there.
-    // Same physical situation, same status, whichever API the author reached
-    // for. Before this pairing, fail() gave 141 and exit(1) gave 1.
-    try std.testing.expectEqual(@as(u8, 1), exitCodeForReportedError(error.CommandFailed));
-}
-
-// The broken-pipe recognition these once tested now lives on `Stdio` — see
-// `Stdio.writeError` (which stream's error wins, and why test overrides are
-// never inspected) and `statusForWriteError` (EPIPE is 141, a full disk is
-// not) in zcli.zig, both tested there.
 
 /// Compiled registry with all command and plugin information
 pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const CommandEntry, comptime new_plugins: []const type) type {
@@ -542,7 +381,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         /// Tests use this to capture or silence framework output via
         /// `Stdio.stdout_override`/`stderr_override` — without it, pipeline-
         /// level tests spill parse errors onto the real stderr.
-        pub fn executeWithStdio(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8, stdio: *zcli.Stdio) !void {
+        pub fn invokeWithStdio(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8, stdio: *zcli.Stdio) !zcli.InvocationResult {
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
@@ -564,14 +403,12 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
 
             const plugin_command_info_list = command_info;
 
-            defer stdio.flush();
-
             // Arena-per-command allocator: everything the command and framework
             // bookkeeping allocate during this invocation lives in the arena and is
             // reclaimed wholesale when execute() returns. Command authors never need
             // to call free. See docs/adr/0001-arena-per-command-allocator.md.
             var arena = std.heap.ArenaAllocator.init(allocator);
-            defer arena.deinit();
+            errdefer arena.deinit();
 
             // Use the computed Context type which includes type-safe plugin data
             var context = Context{
@@ -589,22 +426,104 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 .global_options = global_options_list,
                 .console = self.console,
             };
-            defer context.deinit();
 
+            errdefer context.deinit();
+
+            var failure_trace: ?std.builtin.StackTrace = null;
+            const invocation_error: ?anyerror = blk: {
+                self.executeInvocation(&context, args) catch |err| {
+                    if (@errorReturnTrace()) |trace| failure_trace = zcli.failure.retain(context.allocator, trace.*) catch null;
+                    break :blk err;
+                };
+                break :blk null;
+            };
+            var primary = invocation_error;
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "onFinish")) {
+                    if (context.pluginInitialized(Plugin)) {
+                        const had_primary = primary != null;
+                        const saved = if (had_primary) FailureState.capture(&context) else null;
+                        Plugin.onFinish(&context, !had_primary) catch |err| {
+                            if (!had_primary) {
+                                primary = err;
+                                if (@errorReturnTrace()) |trace| failure_trace = zcli.failure.retain(context.allocator, trace.*) catch null;
+                                context.failure_stage = .completion;
+                                context.failure_origin = .{ .plugin = pluginName(Plugin) };
+                            } else context.secondary_errors.append(context.allocator, err) catch {};
+                        };
+                        if (saved) |state| state.restore(&context);
+                    }
+                }
+            }
+            var outcome: zcli.failure.Outcome = if (context.invocation_completed) .completed else .success;
+            var status: u8 = 0;
+            if (primary) |err| {
+                var failure = zcli.Failure{
+                    .category = context.failure_category,
+                    .cause = err,
+                    .trace = failure_trace,
+                    .stage = context.failure_stage,
+                    .origin = context.failure_origin,
+                    .command_path = context.command_path,
+                    .id = context.failure_id,
+                    .message = context.failure_message,
+                    .diagnostic = context.diagnostic,
+                };
+                status = finalizeFailure(&context, &failure);
+                outcome = .{ .failure = failure };
+            }
+            // Release plugin resources before flushing and handing ownership of
+            // the arena to the caller. Result strings remain alive in the arena.
+            context.deinit();
+            stdio.flush();
+            if (stdio.writeError()) |write_err| {
+                // Classified application/framework failures outrank diagnostic
+                // write failures; otherwise output integrity determines status.
+                const classified = switch (outcome) {
+                    .failure => |f| f.category != .unexpected and f.category != .io,
+                    else => false,
+                };
+                if (!classified) {
+                    stdio.reportWriteFailure(write_err);
+                    status = zcli.statusForWriteError(write_err);
+                    outcome = .{ .failure = .{ .category = .io, .cause = error.WriteFailed, .stage = .flushing } };
+                }
+            }
+            return .{ .outcome = outcome, .status = status, .arena = arena, .secondary_errors = context.secondary_errors.items };
+        }
+
+        /// Run an invocation without exiting. The result owns its diagnostic
+        /// storage; call deinit even on success.
+        pub fn invoke(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !zcli.InvocationResult {
+            var stdio: zcli.Stdio = undefined;
+            stdio.init(io);
+            return self.invokeWithStdio(allocator, io, environ, args, &stdio);
+        }
+
+        pub fn executeWithStdio(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8, stdio: *zcli.Stdio) !void {
+            var result = try self.invokeWithStdio(allocator, io, environ, args, stdio);
+            defer result.deinit();
+            switch (result.outcome) {
+                .failure => |failure| {
+                    zcli.failure.restoreTrace(failure.trace);
+                    return failure.cause;
+                },
+                else => {},
+            }
+        }
+
+        fn executeInvocation(self: *Self, context: *Context, args: []const []const u8) !void {
             // 0. Let plugins capture references off the context into their
             // ContextData before any hook runs. A failure here aborts before
             // execution and runs any deinit hooks already owed.
             try context.initPluginData();
 
-            // 0.25 Run onStartup hooks once per invocation, after plugin data
-            // is captured but before any argument parsing or routing. A startup
-            // hook does one-time work (e.g. a rate-limited "new version
-            // available" probe); an error here propagates like any other
-            // pre-command hook (preParse/transformArgs use a bare `try`),
-            // aborting before the command runs.
+            // Early startup hooks run before parsing. Operational I/O belongs
+            // in prepare, which help and invalid invocations bypass.
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "onStartup")) {
-                    try Plugin.onStartup(&context);
+                    setStage(context, .startup, .{ .plugin = pluginName(Plugin) });
+                    try Plugin.onStartup(context);
                 }
             }
 
@@ -622,43 +541,17 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // default — this whole stage compiles out and a leading `@` is just
             // a character, so `myapp install @scope/pkg` reaches the command as
             // written and no argv token can name a file to read.
+            setStage(context, .response_files, .framework);
             const expanded_args = if (comptime !config.response_files) args else expand: {
                 var rf_diag: ?response_file.Diagnostic = null;
-                break :expand response_file.expandArgs(context.allocator, io, std.Io.Dir.cwd(), args, &rf_diag) catch |err| {
-                    // A response file we couldn't use is reported CLI misuse:
-                    // print the offending path (sanitized — it comes from argv)
-                    // and a usage pointer, then let run() map it to exit code 2.
-                    // Best-effort writes, never `try`: same reasoning as
-                    // reportParseError (#740) — a stderr that can't be written
-                    // must not turn this classified misuse into
-                    // `error.WriteFailed` and demote its exit status from 2 to 1.
+                break :expand response_file.expandArgs(context.allocator, context.io, std.Io.Dir.cwd(), args, &rf_diag) catch |err| {
+                    context.failure_category = .usage;
                     if (rf_diag) |d| {
-                        var stderr = context.stderr();
-                        switch (err) {
-                            // Distinct wording for a distinct fix: shrink or
-                            // split the file, don't go hunting for a bad path.
-                            error.ResponseFileTooLarge => {
-                                stderr.print("Error: response file '@", .{}) catch {};
-                                zcli.writeSanitized(stderr, d.path) catch {};
-                                stderr.print("' is too large (limit {d} bytes)\n", .{response_file.max_file_bytes}) catch {};
-                            },
-                            else => {
-                                stderr.print("Error: cannot read response file '@", .{}) catch {};
-                                zcli.writeSanitized(stderr, d.path) catch {};
-                                stderr.print("'\n", .{}) catch {};
-                                // The likeliest cause by far is that the user
-                                // meant a literal `@` value (`@scope/pkg`, a
-                                // handle, `user@host`) and never wanted a file.
-                                // `--` is the escape, and it was previously
-                                // documented only in the source — where nobody
-                                // hitting this error would ever find it (#764).
-                                stderr.print("If you meant a literal '@' argument, put it after '--': {s} -- @", .{context.app_name}) catch {};
-                                zcli.writeSanitized(stderr, d.path) catch {};
-                                stderr.print("\n", .{}) catch {};
-                            },
-                        }
-                        stderr.print("Run '{s} --help' for usage.\n", .{context.app_name}) catch {};
-                        stderr.flush() catch {};
+                        context.failure_message = switch (err) {
+                            error.ResponseFileTooLarge => std.fmt.allocPrint(context.allocator, "Error: response file '@{s}' is too large (limit {d} bytes)\nRun '{s} --help' for usage.", .{ d.path, response_file.max_file_bytes, context.app_name }) catch null,
+                            else => std.fmt.allocPrint(context.allocator, "Error: cannot read response file '@{s}'\nIf you meant a literal '@' argument, put it after '--': {s} -- @{s}\nRun '{s} --help' for usage.", .{ d.path, context.app_name, d.path, context.app_name }) catch null,
+                        };
+                        context.failure_message_owned = context.failure_message != null;
                     }
                     return err;
                 };
@@ -668,25 +561,18 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             var current_args = expanded_args;
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "preParse")) {
-                    current_args = try Plugin.preParse(&context, current_args);
+                    setStage(context, .pre_parse, .{ .plugin = pluginName(Plugin) });
+                    current_args = try Plugin.preParse(context, current_args);
                 }
             }
 
-            // 2. Extract and handle global options. Failures here are parse
-            // errors like any other: dispatch onError, default-render the
-            // diagnostic when unhandled.
-            const global_result = self.parseGlobalOptions(&context, current_args) catch |err| {
-                if (!isReportedCliError(err)) return err;
-                // Dispatch through runOnErrorHooks (not a bare `try Plugin.onError`)
-                // so a hook that itself errors can't shadow the original parse
-                // diagnostic — the same catch-warn-continue contract every other
-                // error site uses (#390/#512).
-                if (!try runOnErrorHooks(&context, err)) {
-                    try reportParseError(&context, context.diagnostic);
-                    return err;
-                }
-                return;
+            // Validate all global values before dispatching any handlers.
+            setStage(context, .global_options, .framework);
+            const global_result = self.parseGlobalOptions(context, current_args) catch |err| {
+                if (context.diagnostic != null and context.failure_origin == .framework) context.failure_category = .usage;
+                return err;
             };
+            context.globals_ready = true;
             defer context.allocator.free(global_result.consumed);
             defer context.allocator.free(global_result.remaining);
             current_args = global_result.remaining;
@@ -695,89 +581,264 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             var transform_result = zcli.TransformResult{ .args = current_args };
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "transformArgs") and transform_result.continue_processing) {
-                    transform_result = try Plugin.transformArgs(&context, transform_result.args);
+                    setStage(context, .transform, .{ .plugin = pluginName(Plugin) });
+                    transform_result = try Plugin.transformArgs(context, transform_result.args);
                 }
             }
 
             if (!transform_result.continue_processing) {
+                context.invocation_completed = true;
                 return; // Plugin stopped execution
             }
 
             current_args = transform_result.args;
 
             // 4. Route to command
-            try self.executeCommand(&context, current_args);
+            setStage(context, .routing, .framework);
+            try self.executeCommand(context, current_args);
         }
 
         /// Convenient run method that handles process args, io, and environment
         pub fn run(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
-            // Windows consoles default to a legacy code page, so without this a
-            // typed multibyte character arrives mangled and printed UTF-8 shows
-            // as mojibake. Switch to UTF-8 for the run and restore on the way
-            // out; a no-op on POSIX. `std.process.exit` skips deferred restores,
-            // so the reported-error path below restores explicitly.
             const console = console_utf8.enable();
             defer console.restore();
-            // Hand the captured code pages to each Context built for this run so
-            // context.exit() can restore them before std.process.exit skips the
-            // deferred restore above (issue #438).
             self.console = console;
-
-            // Own the Stdio here (rather than letting execute() create it) so
-            // that after a failure we can inspect the writer state to tell a
-            // broken pipe apart from any other write error.
-            var stdio: zcli.Stdio = undefined;
-            stdio.init(io);
-
-            self.executeWithStdio(allocator, io, environ, if (args.len > 0) args[1..] else args, &stdio) catch |err| {
-                // Two questions, in this order — the ordering *is* the design,
-                // because a classified error and a failed write can both be
-                // true at once and demand different statuses.
-                //
-                // 1. CLI-entry semantics: some failures already showed the user
-                // a message — parse/routing diagnostics, a plugin, the framework
-                // fallback, or a command's own context.fail(). Exit non-zero
-                // with the conventional status (2 misuse / 3 command-not-found
-                // / 1 general) without letting a raw error trace follow that
-                // friendly message. Anything else is an unexpected failure;
-                // propagate it so the name and trace aid debugging. Library/test
-                // callers who want the error itself use execute() directly.
-                //
-                // This deliberately outranks question 2, including a broken
-                // pipe. "You invoked it wrong" is the fact the caller acts on,
-                // and it must survive an output failure of *any* kind on
-                // *either* stream: #740 restored exit 2 for `myapp --bogus
-                // 2>&-`, and a closed stdout (`myapp --bogus | head`) is the
-                // same event — protecting the signal against one and not the
-                // other would be arbitrary. It also keeps context.exit(n) and
-                // `return context.fail(...)` in agreement: both are the command
-                // classifying its own failure, so both keep their status when
-                // the pipe closes. A command that does *not* reclassify a
-                // broken pipe still propagates WriteFailed, lands unclassified
-                // in question 2, and exits 141 as before.
-                if (isReportedCliError(err)) {
-                    console.restore();
-                    std.process.exit(exitCodeForReportedError(err));
-                }
-                // 2. Nothing classified this failure, so output integrity has
-                // the last word: a closed pipe is the conventional SIGPIPE
-                // status, silently; any other lost write gets a diagnostic
-                // rather than a raw error trace (#731). This is where the
-                // `error.WriteFailed` that reached us lands.
-                exitOnWriteFailure(&stdio, console);
-                return err;
+            var result = try self.invoke(allocator, io, environ, if (args.len > 0) args[1..] else args);
+            const status = result.status;
+            const unexpected: ?anyerror = switch (result.outcome) {
+                .failure => |f| if (f.category == .unexpected and !f.reported and f.message == null and f.id == null) f.cause else null,
+                else => null,
             };
+            if (unexpected != null) zcli.failure.restoreTrace(result.outcome.failure.trace);
+            result.deinit();
+            console.restore();
+            if (unexpected) |err| return err;
+            if (status != 0) std.process.exit(status);
+        }
 
-            // The command completed without erroring, but the writers may still
-            // have failed on the *final* buffered flush — the one
-            // `executeWithStdio`'s `defer stdio.flush()` runs on its way out,
-            // which cannot propagate an error out of a `defer` and so records
-            // it on the writer instead. A whole-output-fits-in-one-buffer
-            // command (`yourcli cmd | head -c0`, or `yourcli gen >/mnt/full/f`)
-            // never sees a mid-command write failure, so without this check it
-            // would exit 0 having written nothing (#731). Read the recorded
-            // error back the same way the error path above does.
-            exitOnWriteFailure(&stdio, console);
+        fn pluginName(comptime Plugin: type) []const u8 {
+            return if (@hasDecl(Plugin, "plugin_id")) Plugin.plugin_id else @typeName(Plugin);
+        }
+
+        fn setStage(context: *Context, stage: zcli.failure.Stage, origin: zcli.failure.Origin) void {
+            context.failure_stage = stage;
+            context.failure_origin = origin;
+            context.failure_category = .unexpected;
+            context.diagnostic = null;
+        }
+
+        fn recordSecondary(context: *Context, err: anyerror) void {
+            context.secondary_errors.append(context.allocator, err) catch {};
+        }
+
+        /// Failure callbacks may themselves call fail(). Detaching the primary
+        /// message prevents that secondary report from freeing it; restoring
+        /// state keeps later callbacks and fallback rendering on the primary.
+        const FailureState = struct {
+            category: zcli.failure.Category,
+            stage: zcli.failure.Stage,
+            origin: zcli.failure.Origin,
+            diagnostic: ?zcli.ZcliDiagnostic,
+            message: ?[]const u8,
+            message_owned: bool,
+            id: ?[]const u8,
+            rendered: bool,
+            globals_ready: bool,
+            command_path: []const []const u8,
+            command_arguments: []const []const u8,
+            canonical_command_path: []const []const u8,
+            fn capture(context: *Context) FailureState {
+                const state = FailureState{
+                    .category = context.failure_category,
+                    .stage = context.failure_stage,
+                    .origin = context.failure_origin,
+                    .diagnostic = context.diagnostic,
+                    .message = context.failure_message,
+                    .message_owned = context.failure_message_owned,
+                    .id = context.failure_id,
+                    .rendered = context.failure_rendered,
+                    .globals_ready = context.globals_ready,
+                    .command_path = context.command_path,
+                    .command_arguments = context.command_arguments,
+                    .canonical_command_path = context.canonical_command_path,
+                };
+                context.failure_message_owned = false;
+                return state;
+            }
+            fn restore(state: FailureState, context: *Context) void {
+                if (context.failure_message_owned) context.allocator.free(context.failure_message.?);
+                context.failure_category = state.category;
+                context.failure_stage = state.stage;
+                context.failure_origin = state.origin;
+                context.diagnostic = state.diagnostic;
+                context.failure_message = state.message;
+                context.failure_message_owned = state.message_owned;
+                context.failure_id = state.id;
+                context.failure_rendered = state.rendered;
+                context.globals_ready = state.globals_ready;
+                context.command_path = state.command_path;
+                context.command_arguments = state.command_arguments;
+                context.canonical_command_path = state.canonical_command_path;
+            }
+        };
+
+        fn describeWith(context: *Context, failure: zcli.Failure, comptime Describer: type) !?zcli.failure.Description {
+            const state = FailureState.capture(context);
+            defer state.restore(context);
+            var description = (try Describer.describeFailure(context, failure)) orelse return null;
+            // A successful description may borrow the callback's own fail()
+            // message, which the state guard will reclaim on return.
+            description.id = if (description.id) |id| context.allocator.dupe(u8, id) catch null else null;
+            description.message = if (description.message) |message| context.allocator.dupe(u8, message) catch null else null;
+            return description;
+        }
+
+        fn commandScopeMatches(parts: []const []const u8, expected: []const u8) bool {
+            var index: usize = 0;
+            for (parts, 0..) |part, i| {
+                if (i != 0) {
+                    if (index == expected.len or expected[index] != ' ') return false;
+                    index += 1;
+                }
+                if (!std.mem.startsWith(u8, expected[index..], part)) return false;
+                index += part.len;
+            }
+            return index == expected.len;
+        }
+
+        // Stage a renderer's bytes: an error must never leave half a JSON
+        // document followed by the fallback human explanation.
+        fn renderWith(context: *Context, failure: zcli.Failure, status: u8, comptime Renderer: type, comptime app_policy: bool) !bool {
+            const state = FailureState.capture(context);
+            defer state.restore(context);
+            var out: std.Io.Writer.Allocating = .init(context.allocator);
+            defer out.deinit();
+            var errout: std.Io.Writer.Allocating = .init(context.allocator);
+            defer errout.deinit();
+            const stdout = context.stdout();
+            const stderr = context.stderr();
+            const old_out = context.stdio.stdout_override;
+            const old_err = context.stdio.stderr_override;
+            context.stdio.stdout_override = &out.writer;
+            context.stdio.stderr_override = &errout.writer;
+            defer {
+                context.stdio.stdout_override = old_out;
+                context.stdio.stderr_override = old_err;
+            }
+            const rendered = if (app_policy) blk: {
+                try Renderer.renderFailure(context, failure, status);
+                break :blk true;
+            } else try Renderer.renderFailure(context, failure);
+            if (rendered) {
+                try stdout.writeAll(out.written());
+                try stderr.writeAll(errout.written());
+            }
+            return rendered;
+        }
+
+        fn finalizeFailure(context: *Context, failure: *zcli.Failure) u8 {
+            const Policy = config.failure_policy;
+            var status = zcli.failure.statusFor(failure.category, config.exit_codes);
+            var silent = false;
+            var mapped = false;
+            if (@hasDecl(Policy, "error_codes")) {
+                comptime {
+                    for (Policy.error_codes, 0..) |rule, i| {
+                        if (rule.code == 0) @compileError("failure_policy.error_codes: failure status must be nonzero");
+                        if (rule.command != null and rule.plugin != null) @compileError("failure_policy.error_codes: choose a command scope or plugin scope");
+                        for (Policy.error_codes[0..i]) |other| {
+                            if ((rule.command != null and other.plugin != null) or (rule.plugin != null and other.command != null)) continue;
+                            if (rule.cause == other.cause and
+                                (rule.command == null or other.command == null or std.mem.eql(u8, rule.command.?, other.command.?)) and
+                                (rule.plugin == null or other.plugin == null or std.mem.eql(u8, rule.plugin.?, other.plugin.?)))
+                                @compileError("failure_policy.error_codes: overlapping rules for " ++ @errorName(rule.cause));
+                        }
+                    }
+                }
+                if (!failure.isUsage() and failure.origin != .framework) {
+                    inline for (Policy.error_codes) |rule| {
+                        const plugin_matches = if (rule.plugin) |name| switch (failure.origin) {
+                            .plugin => |id| std.mem.eql(u8, name, id),
+                            else => false,
+                        } else true;
+                        const command_matches = if (rule.command) |name| failure.origin == .command and commandScopeMatches(context.canonical_command_path, name) else true;
+                        if (rule.cause == failure.cause and plugin_matches and command_matches) {
+                            failure.category = .application;
+                            failure.id = rule.id;
+                            failure.message = failure.message orelse rule.message;
+                            status = rule.code;
+                            mapped = true;
+                            silent = rule.silent;
+                            break;
+                        }
+                    }
+                }
+            }
+            // Plugin descriptions enrich an error; numeric policy stays with
+            // the application. First description wins, application overrides it.
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "describeFailure")) {
+                    const description = if (context.pluginInitialized(Plugin)) describeWith(context, failure.*, Plugin) catch |err| blk: {
+                        recordSecondary(context, err);
+                        break :blk null;
+                    } else null;
+                    if (description) |d| {
+                        failure.id = failure.id orelse d.id;
+                        failure.message = failure.message orelse d.message;
+                        silent = silent or d.silent;
+                    }
+                }
+            }
+            if (@hasDecl(Policy, "describeFailure")) {
+                const description = describeWith(context, failure.*, Policy) catch |err| blk: {
+                    recordSecondary(context, err);
+                    break :blk null;
+                };
+                if (description) |d| {
+                    failure.id = d.id orelse failure.id;
+                    failure.message = d.message orelse failure.message;
+                    silent = d.silent;
+                }
+            }
+            if (failure.message != null or failure.id != null or silent) {
+                if (failure.category == .unexpected) failure.category = .application;
+            }
+            failure.reported = silent or context.failure_rendered;
+            if (!mapped) status = zcli.failure.statusFor(failure.category, config.exit_codes);
+            if (!silent and !context.failure_rendered) {
+                var rendered = false;
+                if (@hasDecl(Policy, "renderFailure")) {
+                    rendered = if (context.globals_ready) renderWith(context, failure.*, status, Policy, true) catch |err| blk: {
+                        recordSecondary(context, err);
+                        break :blk false;
+                    } else false;
+                }
+                inline for (sorted_plugins) |Plugin| {
+                    if (@hasDecl(Plugin, "renderFailure")) {
+                        if (!rendered and context.globals_ready and context.pluginInitialized(Plugin)) rendered = renderWith(context, failure.*, status, Plugin, false) catch |err| blk: {
+                            recordSecondary(context, err);
+                            break :blk false;
+                        };
+                    }
+                }
+                failure.reported = rendered;
+                if (!rendered) {
+                    if (failure.message) |message| {
+                        zcli.writeSanitized(context.stderr(), message) catch {};
+                        context.stderr().writeByte('\n') catch {};
+                    } else if (failure.diagnostic != null) {
+                        reportParseError(context, failure.diagnostic) catch {};
+                    } else if (failure.category == .unknown_command) {
+                        context.stderr().writeAll("Unknown command. Use --help for usage information.\n") catch {};
+                    } else if (failure.category != .unexpected) {
+                        context.stderr().print("Error: {s}\n", .{@errorName(failure.cause)}) catch {};
+                    }
+                }
+            }
+            failure.id = if (failure.id) |id| context.allocator.dupe(u8, id) catch null else null;
+            failure.message = if (failure.message) |message| context.allocator.dupe(u8, message) catch null else null;
+            failure.diagnostic = if (failure.diagnostic) |d| zcli.failure.retain(context.allocator, d) catch null else null;
+            return status;
         }
 
         /// Convert `value` and hand it to the plugin that declared
@@ -797,6 +858,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 if (@hasDecl(Plugin, "handleGlobalOption") and @hasDecl(Plugin, "global_options")) {
                     inline for (Plugin.global_options) |plugin_opt| {
                         if (comptime std.mem.eql(u8, plugin_opt.name, global_opt.name)) {
+                            setStage(context, .global_options, .{ .plugin = pluginName(Plugin) });
                             try Plugin.handleGlobalOption(context, global_opt.name, typed_value);
                             return;
                         }
@@ -827,7 +889,23 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
         };
 
+        const PendingGlobal = struct { name: []const u8, value: []const u8, is_short: bool };
+        fn queueGlobalOption(context: *Context, comptime opt: zcli.GlobalOption, value: []const u8, is_short: bool, pending: *std.ArrayList(PendingGlobal)) !void {
+            _ = convertGlobalValue(opt.type, value) catch {
+                context.diagnostic = .{ .OptionInvalidValue = .{
+                    .option_name = opt.name,
+                    .is_short = is_short,
+                    .provided_value = value,
+                    .expected_type = zcli.expectedTypeName(opt.type),
+                } };
+                return error.OptionInvalidValue;
+            };
+            try pending.append(context.allocator, .{ .name = opt.name, .value = value, .is_short = is_short });
+        }
+
         pub fn parseGlobalOptions(_: *Self, context: *Context, args: []const []const u8) !zcli.GlobalOptionsResult {
+            var pending: std.ArrayList(PendingGlobal) = .empty;
+            defer pending.deinit(context.allocator);
             var consumed = std.ArrayList(usize).empty;
             var remaining = std.ArrayList([]const u8).empty;
             defer consumed.deinit(context.allocator);
@@ -886,7 +964,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                     return zcli.ZcliError.OptionBooleanWithValue;
                                 }
 
-                                try dispatchGlobalOption(context, global_opt, value, false);
+                                try queueGlobalOption(context, global_opt, value, false, &pending);
                                 break;
                             }
                         }
@@ -911,7 +989,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                     // char — the first-matching global is boolean — so first-match
                                     // dispatch of "true" is safe.
                                     if (global_opt.short == short_char) {
-                                        try dispatchGlobalOption(context, global_opt, "true", true);
+                                        try queueGlobalOption(context, global_opt, "true", true, &pending);
                                         break;
                                     }
                                 }
@@ -931,7 +1009,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                         if (v.attached == null) {
                                             try consumed.append(context.allocator, shorts.index + 1);
                                         }
-                                        try dispatchGlobalOption(context, global_opt, value, true);
+                                        try queueGlobalOption(context, global_opt, value, true, &pending);
                                         break;
                                     }
                                 }
@@ -941,6 +1019,15 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 }
             }
 
+            // No handler observes partially parsed global options.
+            for (pending.items) |item| {
+                inline for (global_options) |opt| {
+                    if (std.mem.eql(u8, item.name, opt.name)) {
+                        try dispatchGlobalOption(context, opt, item.value, item.is_short);
+                        break;
+                    }
+                }
+            }
             const result = zcli.GlobalOptionsResult{
                 .consumed = try consumed.toOwnedSlice(context.allocator),
                 .remaining = try remaining.toOwnedSlice(context.allocator),
@@ -965,37 +1052,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         /// their historical behavior of letting the parser report it.
         const CommandKind = enum { regular, plugin };
 
-        /// Dispatch `err` to the plugins' onError hooks, first handler wins.
-        /// Returns whether a plugin handled (and thereby suppressed) the error.
-        /// A hook that itself errors must not replace the original error (whose
-        /// diagnostic would then never be reported) — the hook's failure is
-        /// noted on stderr and dispatch continues to the next hook (#390).
-        fn runOnErrorHooks(context: *Context, err: anyerror) !bool {
-            inline for (sorted_plugins) |Plugin| {
-                if (@hasDecl(Plugin, "onError")) {
-                    const plugin_name = comptime if (@hasDecl(Plugin, "plugin_id")) Plugin.plugin_id else @typeName(Plugin);
-                    const handled = Plugin.onError(context, err) catch |hook_err| blk: {
-                        context.stderr().print(
-                            "Warning: {s} onError hook failed with {s} while handling {s}\n",
-                            .{ plugin_name, @errorName(hook_err), @errorName(err) },
-                        ) catch {};
-                        break :blk false;
-                    };
-                    if (handled) return true;
-                }
-            }
-            return false;
-        }
-
         /// Finish a rejected command-input path through the one registry-owned
-        /// diagnostic seam. The context is populated before `onError`; a handled
-        /// error suppresses default rendering and propagation. Hook failures are
-        /// already contained by `runOnErrorHooks`, and rendering remains
-        /// best-effort so neither can replace the classified input error.
+        /// diagnostic seam. Context records the diagnostic before failure callbacks;
+        /// renderers control presentation without changing failure status.
+        /// Secondary callback errors cannot replace the classified input error.
         fn handleInputError(context: *Context, err: anyerror, diag: ?zcli.ZcliDiagnostic) !void {
             context.diagnostic = diag;
-            if (try runOnErrorHooks(context, err)) return;
-            try reportParseError(context, diag);
+            if (diag != null) context.failure_category = .usage;
             return err;
         }
 
@@ -1004,6 +1067,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             var parsed_args = parsed;
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "postParse")) {
+                    setStage(context, .parsing, .{ .plugin = pluginName(Plugin) });
                     if (try Plugin.postParse(context, parsed_args)) |new_parsed| {
                         parsed_args = new_parsed;
                     }
@@ -1012,19 +1076,29 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             return parsed_args;
         }
 
-        /// Run preExecute hooks. Returns null when a plugin cancels execution.
-        fn runPreExecuteHooks(context: *Context, parsed: zcli.ParsedArgs) !?zcli.ParsedArgs {
-            var parsed_args = parsed;
+        /// Operational preparation runs only after resolved input validates.
+        fn runPreExecuteHooks(context: *Context, parsed_args: zcli.ParsedArgs) !?zcli.ParsedArgs {
             inline for (sorted_plugins) |Plugin| {
-                if (@hasDecl(Plugin, "preExecute")) {
-                    if (try Plugin.preExecute(context, parsed_args)) |new_parsed| {
-                        parsed_args = new_parsed;
-                    } else {
-                        return null;
-                    }
+                if (@hasDecl(Plugin, "prepare")) {
+                    setStage(context, .preparation, .{ .plugin = pluginName(Plugin) });
+                    try Plugin.prepare(context);
                 }
             }
             return parsed_args;
+        }
+
+        fn runInformationHooks(context: *Context) !bool {
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "handleInformation")) {
+                    setStage(context, .information, .{ .plugin = pluginName(Plugin) });
+                    if (try Plugin.handleInformation(context) == .complete) {
+                        context.invocation_completed = true;
+                        return true;
+                    }
+                }
+            }
+            setStage(context, .routing, .framework);
+            return false;
         }
 
         /// Point context.command_path at an allocated copy of `parts`.
@@ -1078,6 +1152,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     if (isStringLike(@TypeOf(fm)) or !@hasField(@TypeOf(fm), "requires")) break :blk null;
                     break :blk option_utils.tupleToStrings(fm.requires);
                 };
+                const delimiter: ?u8 = blk: {
+                    if (!is_option or @TypeOf(field_meta_map) == @TypeOf(null)) break :blk null;
+                    if (!@hasField(@TypeOf(field_meta_map), field.name)) break :blk null;
+                    const fm = @field(field_meta_map, field.name);
+                    if (!@hasField(@TypeOf(fm), "delimiter")) break :blk null;
+                    break :blk fm.delimiter;
+                };
                 const default_value: ?[]const u8 = blk: {
                     const dp = field.default_value_ptr orelse break :blk null;
                     const dv = @as(*const field.type, @ptrCast(@alignCast(dp))).*;
@@ -1093,6 +1174,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .name = field.name,
                     .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                     .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
+                    .delimiter = delimiter,
                     .short = short,
                     .description = description,
                     .type_name = @typeName(field.type),
@@ -1153,6 +1235,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         /// Record the resolved command's metadata and introspection info on
         /// the context (the help plugin renders from these).
         fn setCommandInfo(comptime Module: type, context: *Context) !void {
+            context.setCommandConfig(Module);
             if (@hasDecl(Module, "meta")) {
                 const meta = Module.meta;
                 context.command_meta = zcli.CommandMeta{
@@ -1163,27 +1246,40 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             context.command_module_info = comptime moduleInfoOf(Module);
         }
 
-        /// Everything that happens after routing has resolved a command
-        /// module: record context info, run postParse/preExecute hooks, parse
-        /// argv, execute, and dispatch errors/postExecute. `command_parts` is
+        /// Resolve metadata, information, typed input, configuration and
+        /// validation before preparing and executing. `command_parts` is
         /// the matched command path; `remaining_args` the argv after it.
-        fn executeResolvedCommand(comptime Module: type, comptime kind: CommandKind, context: *Context, command_parts: []const []const u8, remaining_args: []const []const u8) !void {
+        fn executeResolvedCommand(comptime Module: type, comptime kind: CommandKind, context: *Context, command_parts: []const []const u8, canonical_parts: []const []const u8, remaining_args: []const []const u8) !void {
             @setEvalBranchQuota(comptime quota.forCommands(cmd_entries.len + plugin_command_entries.len));
             try setCommandPath(context, command_parts);
+            context.canonical_command_path = canonical_parts;
             try setCommandInfo(Module, context);
+            context.command_arguments = remaining_args;
 
             var parsed_args = zcli.ParsedArgs.init(context.allocator);
             parsed_args.positional = remaining_args;
             parsed_args = try runPostParseHooks(context, parsed_args);
-            parsed_args = (try runPreExecuteHooks(context, parsed_args)) orelse return; // plugin cancelled execution
+            context.command_arguments = parsed_args.positional;
+            if (try runInformationHooks(context)) return;
 
             // Metadata-only command group (no execute): route through
             // CommandNotFound so the help plugin renders the subcommand list.
             if (!@hasDecl(Module, "execute")) {
-                if (try runOnErrorHooks(context, error.CommandNotFound)) return;
-                const cmd_name_str = try std.mem.join(context.allocator, " ", command_parts);
-                defer context.allocator.free(cmd_name_str);
-                try context.stderr().print("'{s}' is a command group. Use --help to see available subcommands.\n", .{cmd_name_str});
+                const rest = parsed_args.positional;
+                if (rest.len > 0 and std.mem.startsWith(u8, rest[0], "-")) {
+                    setStage(context, .parsing, .framework);
+                    var diagnostic: ?zcli.ZcliDiagnostic = null;
+                    const parsed = command_parser.parseCommandLine(struct {}, struct {}, null, context.allocator, context.environ, rest, &diagnostic) catch |err|
+                        return handleInputError(context, err, diagnostic);
+                    parsed.deinit();
+                } else if (rest.len > 0) {
+                    const attempted = try context.allocator.alloc([]const u8, command_parts.len + rest.len);
+                    @memcpy(attempted[0..command_parts.len], command_parts);
+                    @memcpy(attempted[command_parts.len..], rest);
+                    try setCommandPath(context, attempted);
+                }
+                setStage(context, .routing, .framework);
+                context.failure_category = .unknown_command;
                 return error.CommandNotFound;
             }
 
@@ -1198,7 +1294,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // non-option argument was almost certainly invoked with a
             // mistyped subcommand — CommandNotFound, not a parse error.
             // Record the attempted path (base command + stray token) and
-            // dispatch onError like every other not-found site, so the
+            // use the common failure pipeline like every other not-found site, so the
             // not-found plugin renders suggestions instead of a silent
             // exit (#384).
             if (kind == .regular and std.meta.fields(ArgsType).len == 0 and
@@ -1209,10 +1305,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 @memcpy(attempted[0..command_parts.len], command_parts);
                 attempted[command_parts.len] = remaining_args[0];
                 try setCommandPath(context, attempted);
-                if (try runOnErrorHooks(context, error.CommandNotFound)) return;
+                context.failure_category = .unknown_command;
                 return error.CommandNotFound;
             }
 
+            setStage(context, .parsing, .framework);
             var input_diag: ?zcli.ZcliDiagnostic = null;
             const parse_result = command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, parsed_args.positional, &input_diag) catch |err|
                 return handleInputError(context, err, input_diag);
@@ -1224,6 +1321,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // Resolve every lower-precedence config adapter behind one policy
             // interface. It preserves the real CLI/env bitset, shares applied
             // state across adapters, and enforces ADR-0032 around the whole loop.
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "loadConfig")) {
+                    setStage(context, .configuration, .{ .plugin = pluginName(Plugin) });
+                    try Plugin.loadConfig(context);
+                }
+            }
+            setStage(context, .configuration, .framework);
             const config_applied = command_validation.applyConfigAdapters(
                 OptionsType,
                 cmd_meta,
@@ -1235,6 +1339,33 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
 
             // The resolved-value policy owns the accepted order: required,
             // requires, exclusive, Args validation, then Options validation.
+            setStage(context, .input, .framework);
+            var stdin_requests: usize = 0;
+            for (parse_result.stdin_requested) |requested| stdin_requests += @intFromBool(requested);
+            if (stdin_requests == 1 and context.stdio.stdin_override == null and (std.Io.File.stdin().isTty(context.io) catch false)) {
+                context.stderr().writeAll("Reading option value from stdin; send EOF to finish.\n") catch {};
+                context.stderr().flush() catch {};
+            }
+            _ = @import("../options.zig").resolveStdin(OptionsType, &options_instance, parse_result.stdin_requested, context.allocator, context.stdin(), config.stdin_max_bytes) catch |err| {
+                switch (err) {
+                    error.MultipleStdinOptions => {
+                        context.failure_category = .usage;
+                        context.failure_message = "Only one option may read from stdin in an invocation";
+                    },
+                    error.StdinTooLong => {
+                        context.failure_category = .usage;
+                        context.failure_message = "Option input from stdin exceeds the configured byte limit";
+                    },
+                    error.StdinReadFailed => {
+                        context.failure_category = .io;
+                        context.failure_message = "Could not read option input from stdin";
+                    },
+                    else => {},
+                }
+                return err;
+            };
+
+            setStage(context, .validation, .framework);
             command_validation.validateResolved(
                 context.allocator,
                 ArgsType,
@@ -1247,29 +1378,9 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 &input_diag,
             ) catch |err| return handleInputError(context, err, input_diag);
 
-            // Execute. A handled error (onError returns true) is suppressed
-            // and falls through to postExecute with success = false. An
-            // unhandled error still runs postExecute (plugin teardown must
-            // not depend on the command succeeding, #389) before propagating.
-            var success = true;
-            Module.execute(args_instance, options_instance, context) catch |err| {
-                success = false;
-                if (!try runOnErrorHooks(context, err)) {
-                    try runPostExecuteHooks(context, false);
-                    return err;
-                }
-            };
-
-            try runPostExecuteHooks(context, success);
-        }
-
-        /// Run every plugin's postExecute hook with the command's outcome.
-        fn runPostExecuteHooks(context: *Context, success: bool) !void {
-            inline for (sorted_plugins) |Plugin| {
-                if (@hasDecl(Plugin, "postExecute")) {
-                    try Plugin.postExecute(context, success);
-                }
-            }
+            _ = try runPreExecuteHooks(context, parsed_args);
+            setStage(context, .execution, .command);
+            try Module.execute(args_instance, options_instance, context);
         }
 
         fn executeCommand(_: *Self, context: *Context, args: []const []const u8) !void {
@@ -1313,10 +1424,10 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // CommandNotFound. With a root index, bare invocation falls
             // through to it below.
             if (!root_index_exists and route_args.len == 0) {
-                const parsed_args = try runPostParseHooks(context, zcli.ParsedArgs.init(context.allocator));
-                _ = (try runPreExecuteHooks(context, parsed_args)) orelse return; // plugin cancelled execution
-                if (try runOnErrorHooks(context, error.CommandNotFound)) return;
-                try context.stderr().print("No command specified. Use --help for usage information.\n", .{});
+                _ = try runPostParseHooks(context, zcli.ParsedArgs.init(context.allocator));
+                if (try runInformationHooks(context)) return;
+                context.failure_category = .unknown_command;
+
                 return error.CommandNotFound;
             }
 
@@ -1332,7 +1443,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         }
                     }
                     if (parts_match) {
-                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, route_args[cmd.path.len..]);
+                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, cmd.canonical_path orelse cmd.path, route_args[cmd.path.len..]);
                     }
                 }
             }
@@ -1373,7 +1484,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             if (best_match_idx) |match_idx| {
                 inline for (plugin_command_entries, 0..) |plugin_cmd, idx| {
                     if (idx == match_idx) {
-                        return executeResolvedCommand(plugin_cmd.module, .plugin, context, plugin_cmd.path, route_args[plugin_cmd.path.len..]);
+                        return executeResolvedCommand(plugin_cmd.module, .plugin, context, plugin_cmd.path, plugin_cmd.canonical_path orelse plugin_cmd.path, route_args[plugin_cmd.path.len..]);
                     }
                 }
             }
@@ -1387,7 +1498,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             if (root_index_exists) {
                 inline for (cmd_entries) |cmd| {
                     if (comptime cmd.path.len == 0) {
-                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, args);
+                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, cmd.canonical_path orelse cmd.path, args);
                     }
                 }
             }
@@ -1395,11 +1506,32 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // Nothing matched. Record the attempted path and route through
             // CommandNotFound. The not-found plugin renders the styled block
             // (suggestions + available commands) — the single source of truth.
-            // A plugin that fully handles the error suppresses it (returns true);
-            // otherwise the error propagates so the entry point exits non-zero.
+            // Renderers may explain the failure; the invocation remains nonzero.
             // No bare fallback line here: it would double-report over that block.
-            try setCommandPath(context, route_args);
-            if (try runOnErrorHooks(context, error.CommandNotFound)) return;
+            // Pure namespace groups have no module/index.zig. Their flags
+            // still have usage semantics, just like a metadata-only group.
+            var group_len: usize = 0;
+            for (context.available_commands) |path| {
+                var matched: usize = 0;
+                while (matched < route_args.len and matched + 1 < path.len and std.mem.eql(u8, path[matched], route_args[matched])) : (matched += 1) {}
+                group_len = @max(group_len, matched);
+            }
+            const group_flags = group_len > 0 and group_len < route_args.len and std.mem.startsWith(u8, route_args[group_len], "-");
+            context.command_arguments = if (group_len > 0) route_args[group_len..] else route_args;
+            try setCommandPath(context, if (group_flags) route_args[0..group_len] else route_args);
+            if (try runInformationHooks(context)) return;
+            if (group_flags) {
+                setStage(context, .parsing, .framework);
+                var diagnostic: ?zcli.ZcliDiagnostic = null;
+                const parsed = command_parser.parseCommandLine(struct {}, struct {}, null, context.allocator, context.environ, context.command_arguments, &diagnostic) catch |err|
+                    return handleInputError(context, err, diagnostic);
+                parsed.deinit();
+                // A terminator alone adds no command input.
+                context.command_arguments = &.{};
+                if (try runInformationHooks(context)) return;
+            }
+            setStage(context, .routing, .framework);
+            context.failure_category = .unknown_command;
             return error.CommandNotFound;
         }
 

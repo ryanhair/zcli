@@ -124,7 +124,11 @@ pub fn handleGlobalOption(context: anytype, option_name: []const u8, value: anyt
     }
 }
 
-pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+pub fn loadConfig(context: anytype) !void {
+    _ = try readConfiguration(context, .{});
+}
+
+fn readConfiguration(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
     const allocator = context.allocator;
     const data = &context.plugins.zcli_config;
     const stderr = context.stderr();
@@ -570,7 +574,7 @@ fn detectFormat(path: []const u8) ?Format {
 /// An explicitly-requested `--config <path>` that doesn't exist is a hard
 /// error (`error.ConfigFileNotFound`) — unlike the implicit default-location
 /// search below, which stays silent when nothing is found. The caller
-/// (`preExecute`) turns this into a user-facing diagnostic via `context.fail`.
+/// (`readConfiguration`) turns this into a user-facing diagnostic via `context.fail`.
 fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, app_name: []const u8, custom_path: ?[]const u8, stderr: *std.Io.Writer, allocated: *bool, is_project_local: *bool) error{ConfigFileNotFound}!?[]const u8 {
     allocated.* = false;
     is_project_local.* = false;
@@ -692,7 +696,7 @@ fn applyYaml(comptime O: type, opts: *O, content: []const u8, ctx: ApplyCtx, dat
 test "plugin structure" {
     try testing.expect(@hasDecl(@This(), "global_options"));
     try testing.expect(@hasDecl(@This(), "handleGlobalOption"));
-    try testing.expect(@hasDecl(@This(), "preExecute"));
+    try testing.expect(@hasDecl(@This(), "readConfiguration"));
     try testing.expect(@hasDecl(@This(), "applyConfigDefaults"));
     try testing.expect(@hasDecl(@This(), "ContextData"));
     try testing.expect(@hasDecl(@This(), "deinitContextData"));
@@ -727,7 +731,7 @@ test "findConfigFile: explicit custom path errors for missing file" {
     try testing.expectError(error.ConfigFileNotFound, result);
 }
 
-test "preExecute: explicit --config missing file fails the run with a clear diagnostic" {
+test "readConfiguration: explicit --config missing file fails the run with a clear diagnostic" {
     const allocator = testing.allocator;
 
     var stdio: zcli.Stdio = undefined;
@@ -745,17 +749,17 @@ test "preExecute: explicit --config missing file fails the run with a clear diag
     ctx.plugins.zcli_config.custom_path = "/nonexistent/path.json";
 
     const args = zcli.ParsedArgs{ .positional = &.{} };
-    const result = preExecute(&ctx, args);
+    const result = readConfiguration(&ctx, args);
     try ctx.stderr().flush();
 
     try testing.expectError(error.CommandFailed, result);
     try testing.expectEqualStrings(
-        "Error: config file '/nonexistent/path.json' not found\n",
-        err_aw.written(),
+        "Error: config file '/nonexistent/path.json' not found",
+        ctx.failure_message.?,
     );
 }
 
-test "preExecute: auto-discovery with no config files stays silent" {
+test "readConfiguration: auto-discovery with no config files stays silent" {
     const allocator = testing.allocator;
 
     var stdio: zcli.Stdio = undefined;
@@ -771,7 +775,7 @@ test "preExecute: auto-discovery with no config files stays silent" {
     ctx.app_name = "nonexistent_zcli_config_app_xyz";
 
     const args = zcli.ParsedArgs{ .positional = &.{} };
-    const result = try preExecute(&ctx, args);
+    const result = try readConfiguration(&ctx, args);
     try ctx.stderr().flush();
 
     // No custom_path set — implicit discovery finds nothing and stays silent.

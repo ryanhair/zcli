@@ -299,7 +299,7 @@ pub fn init(config: Config) type {
                 // Flush and exit cleanly via the context. Exiting the process
                 // directly would discard everything we just wrote to the
                 // buffered stdout — context.exit flushes first.
-                context.exit(0);
+                return;
             }
 
             // Unsigned notice, only under the explicit `.checksum_only` opt-out.
@@ -450,7 +450,7 @@ pub fn init(config: Config) type {
         }
 
         /// Startup hook to check for updates if configured
-        pub fn onStartup(context: anytype) !void {
+        pub fn prepare(context: anytype) !void {
             if (!plugin_config.inform_out_of_date) {
                 return;
             }

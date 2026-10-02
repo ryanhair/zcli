@@ -16,6 +16,7 @@ pub const optionFieldCount = types.optionFieldCount;
 pub const parseOptions = parser.parseOptions;
 pub const parseOptionsWithMeta = parser.parseOptionsWithMeta;
 pub const cleanupOptions = parser.cleanupOptions;
+pub const resolveStdin = @import("options/stdin.zig").resolveStdin;
 
 // Utility functions that users might need (currently none - all utilities are internal)
 
@@ -44,5 +45,6 @@ test {
     _ = parser;
     _ = array_utils;
     _ = utils;
+    _ = @import("options/stdin.zig");
     _ = @import("options/tokenizer.zig");
 }

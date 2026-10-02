@@ -260,6 +260,10 @@ fn generatePluginRegistry(
 
     // Add zcli import to registry module
     registry_module.addImport("zcli", zcli_module);
+    if (config.failure_policy_module) |policy| {
+        policy.addImport("zcli", zcli_module);
+        registry_module.addImport("__zcli_failure_policy", policy);
+    }
 
     // Create modules for all discovered command files dynamically
     const shared_modules = config.shared_modules orelse &.{};
@@ -267,7 +271,7 @@ fn generatePluginRegistry(
     module_creation.createDiscoveredModules(b, registry_module, zcli_module, discovered_commands, config.commands_dir, shared_modules, command_configs);
 
     // Add plugin imports to registry module
-    module_creation.addPluginModulesToRegistry(b, registry_module, zcli_dep, zcli_module, plugins);
+    module_creation.addPluginModulesToRegistry(b, registry_module, zcli_dep, zcli_module, plugins, shared_modules);
 
     return registry_module;
 }
@@ -382,6 +386,9 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         .app_version = app_version,
         .app_description = config.app_description,
         .response_files = config.response_files,
+        .stdin_max_bytes = config.stdin_max_bytes,
+        .exit_codes = config.exit_codes,
+        .failure_policy_module = config.failure_policy_module,
     };
 
     const registry_module = try buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);

@@ -61,6 +61,20 @@ pub fn build(b: *std.Build) void {
     // Tests
     const test_step = b.step("test", "Run unit tests");
     const test_core_step = b.step("test-core", "Run core tests only");
+    // Opt-in process fixture: validates generated application policy wiring,
+    // exit statuses, original error traces, and real stream failures.
+    const invocation_check = b.addSystemCommand(&.{if (@import("builtin").os.tag == .windows) "python" else "python3"});
+    invocation_check.addFileArg(b.path("test/test-invocation-policy.py"));
+    invocation_check.addArg(b.graph.zig_exe);
+    const invocation_step = b.step("test-invocation-policy", "Check generated invocation policy and process outcomes (requires Python)");
+    invocation_step.dependOn(&invocation_check.step);
+
+    const metadata_check = b.addSystemCommand(&.{if (@import("builtin").os.tag == .windows) "python" else "python3"});
+    metadata_check.addFileArg(b.path("test/test-metadata-validation.py"));
+    metadata_check.addArg(b.graph.zig_exe);
+    const metadata_step = b.step("test-metadata-validation", "Check generated metadata compile errors (requires Python)");
+    metadata_step.dependOn(&metadata_check.step);
+
     const test_plugins_step = b.step("test-plugins", "Run plugin tests only");
     const test_security_step = b.step("test-security", "Run security tests only");
     const fuzz_smoke_step = b.step("fuzz-smoke", "Run deterministic parser fuzz corpora");

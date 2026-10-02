@@ -913,8 +913,8 @@ test "add plugin scaffolds a skeleton and hints when plugins_dir is missing" {
 
     const src = try readFile(tmp.dir, a, "src/plugins/telemetry.zig");
     try expectContains(src, "The `telemetry` plugin — Track usage");
-    try expectContains(src, "pub fn preExecute(context: anytype, args: zcli.ParsedArgs)");
-    try expectContains(src, "// pub fn onError(context: anytype, err: anyerror) !bool"); // catalog, commented
+    try expectContains(src, "pub fn prepare(context: anytype)");
+    try expectContains(src, "// pub fn describeFailure(context: anytype, failure: zcli.Failure) !?zcli.failure.Description"); // catalog, commented
     try expectContains(src, "// pub const plugin_id = \"telemetry\";");
 
     // A duplicate is refused.
@@ -1399,8 +1399,8 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement ping");
     }
-    // The comma-separated multi-value form is accepted by the real binary
-    // (equivalent to repeating --tags), while an empty segment is rejected.
+    // Generated repeatable options preserve commas literally by default,
+    // including consecutive commas. Delimiter splitting requires metadata.
     {
         var r = try run(proj, &.{ demo_bin, "ping", "--tags", "a,b", "--tags", "c" });
         defer r.deinit();
@@ -1410,7 +1410,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
     {
         var r = try run(proj, &.{ demo_bin, "ping", "--tags", "a,,b" });
         defer r.deinit();
-        try testing.expect(r.exit_code != 0);
+        try expectOk(r);
     }
 
     // A second command assembled entirely from atomic `add arg`/`add option`
@@ -1566,11 +1566,8 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try testing.expect(i_hint > i_cmds);
     }
 
-    // A pure command group (no `--with-landing`): bare `demo cfg` isn't runnable
-    // on its own, so it resolves to CommandNotFound → the help plugin's onError
-    // detects the group and renders group help. That help path threads through
-    // onError, which is exactly the real-plugin group rendering the audit found
-    // untested (only a mock covered it).
+    // A pure command group completes informationally: the help plugin renders
+    // its subcommands without parsing required options or preparing resources.
     {
         var r = try run(proj, &.{ zcli_exe, "add", "group", "cfg", "-d", "Configuration" });
         defer r.deinit();
@@ -1614,7 +1611,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
     try testing.expect(fileExists(proj, "src/plugins/telemetry.zig"));
 
-    // Replace the pass-through skeleton with a plugin whose preExecute has a
+    // Replace the pass-through skeleton with a plugin whose prepare has a
     // *visible* effect, so the rebuild proves the plugin is genuinely discovered
     // and its hook runs — not merely that the file compiles. (A pass-through
     // hook is indistinguishable from one that never ran.)
@@ -1623,9 +1620,8 @@ test "scaffolded project builds, runs, and round-trips add command" {
         .data =
         \\const std = @import("std");
         \\const zcli = @import("zcli");
-        \\pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+        \\pub fn prepare(context: anytype) !void {
         \\    try context.stderr().print("[telemetry] hook ran\n", .{});
-        \\    return args;
         \\}
         \\
         ,
@@ -1640,7 +1636,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "Hello, World!");
-        // The discovered plugin's preExecute ran (proves .plugins_dir is honored
+        // The discovered plugin's prepare ran (proves .plugins_dir is honored
         // and the local-plugin module resolves to the project's src/plugins/).
         try expectContains(r.stderr, "[telemetry] hook ran");
     }

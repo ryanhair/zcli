@@ -32,10 +32,8 @@ pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !v
     if (std.mem.eql(u8, name, "greet")) context.plugins.greet.enabled = value;
 }
 
-/// preExecute runs before every command; return the (possibly rewritten) args,
-/// or null to halt.
-pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+/// Preparation runs after input validation; informational requests skip it.
+pub fn prepare(context: anytype) !void {
     if (context.plugins.greet.enabled)
         try context.stderr().writeAll("hello from the external greet plugin\n");
-    return args;
 }

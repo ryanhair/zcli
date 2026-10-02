@@ -111,8 +111,11 @@ at-least-one primitive are deliberately deferred until a real command needs them
   - `OptionMutuallyExclusive` — names the set members that were both supplied.
   - `OptionMissingDependency` — names the supplied option and the missing one it
     requires.
-  Both flow through the same `?*?ZcliDiagnostic` path and `reportParseError`
-  rendering as every other option error, and are interceptable by `onError` hooks.
+  Both retain structured diagnostics in the invocation failure pipeline (ADR-0036).
+  The configured `exit_codes.usage` and eligible failure renderers apply to these
+  errors; application error-name mappings do not override framework misuse.
+  Opted-in stdin text is resolved before validation (ADR-0037); operational
+  preparation happens only after all resolved-input validation succeeds.
 
 ## Consequences
 
@@ -126,5 +129,5 @@ at-least-one primitive are deliberately deferred until a real command needs them
   `exclusive`, an at-least-one primitive, and directional-vs-symmetric sugar. The
   chosen primitives don't preclude any of them.
 
-To be documented in `docs/COMMANDS.md` and `docs/DESIGN.md` alongside the
-required-options behavior when implemented.
+The implemented contract is documented in `docs/COMMANDS.md` and
+`docs/DESIGN.md` alongside required-option behavior.

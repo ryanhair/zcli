@@ -6,6 +6,16 @@ The terminal-native layout engine behind zcli's CLI/TUI hybrid ([ADR-0013](../..
 > (`progress`, `prompts`) render on this engine. Exposed on the zcli umbrella
 > as `zcli.ui`; in a command, `context.ui()` returns a pre-wired `App`.
 
+For commands that print a list and exit, use the one-shot `StaticTable` through
+`context.table().print(columns, rows)`. It fits the terminal width, supports
+wrapping or truncating chosen columns, and prints complete uncolored text to
+pipes and files. It does not start an `App` session. Standalone callers can
+construct `ui.StaticTable` with a writer, allocator, theme, and optional width.
+Use `StaticTable.Column` for headers, alignment, minimum/maximum terminal widths,
+shrink priority, and `.overflow = .wrap` or `.truncate`. Physical line breaks are
+preserved; cell ANSI escapes are stripped and control bytes become spaces.
+See [ADR-0039](../../docs/adr/0039-static-tables.md).
+
 ## The model
 
 Output splits into a **static** stream that flows into scrollback and a

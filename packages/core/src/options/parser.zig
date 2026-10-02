@@ -210,6 +210,7 @@ pub fn parseOptionsWithMeta(
     // duplicate-detection path, and with it the `error.OutOfMemory` that every
     // caller had to thread through for bookkeeping that cannot fail.
     var option_counts = [_]u32{0} ** @typeInfo(OptionsType).@"struct".fields.len;
+    var stdin_requested = [_]bool{false} ** struct_info.fields.len;
 
     var tok = tokenizer.Tokenizer(tokenizer.OptionsSpec(OptionsType, meta)){ .args = args };
     parse: while (tok.next()) |token| {
@@ -234,12 +235,12 @@ pub fn parseOptionsWithMeta(
                     return ZcliError.ResourceLimitExceeded;
                 };
 
-                applyLongOption(OptionsType, meta, &result, &option_counts, long, &array_lists, allocator, diag) catch |err| {
+                applyLongOption(OptionsType, meta, &result, &option_counts, &stdin_requested, long, &array_lists, allocator, diag) catch |err| {
                     return convertLongOptionError(err);
                 };
             },
             .shorts => |shorts| {
-                applyShortBundle(OptionsType, meta, &result, &option_counts, shorts, &array_lists, allocator, diag) catch |err| {
+                applyShortBundle(OptionsType, meta, &result, &option_counts, &stdin_requested, shorts, &array_lists, allocator, diag) catch |err| {
                     return convertShortOptionError(err);
                 };
             },
@@ -282,6 +283,7 @@ pub fn parseOptionsWithMeta(
         .options = result,
         .result = .{ .next_arg_index = arg_index },
         .provided = provided,
+        .stdin_requested = stdin_requested,
     };
 }
 
@@ -488,6 +490,7 @@ fn applyLongOption(
     comptime meta: anytype,
     result: *OptionsType,
     option_counts: *[@typeInfo(OptionsType).@"struct".fields.len]u32,
+    stdin_requested: *[@typeInfo(OptionsType).@"struct".fields.len]bool,
     long: anytype,
     array_lists: anytype,
     allocator: std.mem.Allocator,
@@ -538,9 +541,14 @@ fn applyLongOption(
                 // Handle array accumulation
                 const element_type = @typeInfo(field.type).pointer.child;
                 if (array_lists[i]) |*list_union| {
-                    try array_utils.appendCsvToArrayListUnion(element_type, allocator, list_union, value, option_name);
+                    if (comptime utils.delimiterForField(meta, field.name)) |delimiter| {
+                        try array_utils.appendDelimitedToArrayListUnion(element_type, allocator, list_union, value, option_name, delimiter);
+                    } else {
+                        try array_utils.appendToArrayListUnion(element_type, allocator, list_union, value, option_name);
+                    }
                 }
             } else {
+                stdin_requested[i] = (comptime utils.stdinForField(meta, field.name)) and std.mem.eql(u8, value, "-");
                 // Handle single values
                 const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
                     if (diag) |d| d.* = .{ .OptionInvalidValue = .{
@@ -592,6 +600,7 @@ fn applyShortBundle(
     comptime meta: anytype,
     result: *OptionsType,
     option_counts: *[@typeInfo(OptionsType).@"struct".fields.len]u32,
+    stdin_requested: *[@typeInfo(OptionsType).@"struct".fields.len]bool,
     shorts: anytype,
     array_lists: anytype,
     allocator: std.mem.Allocator,
@@ -654,9 +663,14 @@ fn applyShortBundle(
                                 // For array types, accumulate values
                                 if (array_lists.*[i]) |*list_union| {
                                     const element_type = @typeInfo(field.type).pointer.child;
-                                    try array_utils.appendCsvToArrayListUnionShort(element_type, allocator, list_union, value, char);
+                                    if (comptime utils.delimiterForField(meta, field.name)) |delimiter| {
+                                        try array_utils.appendDelimitedToArrayListUnionShort(element_type, allocator, list_union, value, char, delimiter);
+                                    } else {
+                                        try array_utils.appendToArrayListUnionShort(element_type, allocator, list_union, value, char);
+                                    }
                                 }
                             } else {
+                                stdin_requested[i] = (comptime utils.stdinForField(meta, field.name)) and std.mem.eql(u8, value, "-");
                                 const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
                                     if (diag) |d| d.* = .{ .OptionInvalidValue = .{
                                         .option_name = chars[v.index .. v.index + 1],
@@ -1155,7 +1169,7 @@ test "parseOptions comma-separated array values" {
         label: ?[]const u8 = null,
     };
     // Shorts are explicit-only.
-    const meta = .{ .options = .{ .files = .{ .short = 'f' }, .numbers = .{ .short = 'n' } } };
+    const meta = .{ .options = .{ .files = .{ .short = 'f', .delimiter = ',' }, .numbers = .{ .short = 'n', .delimiter = ',' } } };
 
     const allocator = std.testing.allocator;
 
@@ -1193,7 +1207,7 @@ test "parseOptions comma-separated rejects empty segments" {
     // Interior, leading, and trailing empty segments are all invalid.
     inline for (.{ "a,,b", ",a", "a," }) |bad| {
         const args = [_][]const u8{ "--files", bad };
-        try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(TestOptions, allocator, &args, null));
+        try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptionsWithMeta(TestOptions, .{ .options = .{ .files = .{ .delimiter = ',' } } }, allocator, null, &args, null));
     }
 }
 
@@ -1217,7 +1231,7 @@ test "parseOptions does not cap how many values one option carries (#741)" {
     }
     {
         const args = [_][]const u8{ "--nums", buf.items };
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, .{ .options = .{ .nums = .{ .delimiter = ',' } } }, allocator, null, &args, null);
         defer cleanupOptions(TestOptions, parsed.options, allocator);
         try std.testing.expectEqual(@as(usize, 500), parsed.options.nums.len);
     }
@@ -1230,7 +1244,7 @@ test "parseOptions does not cap how many values one option carries (#741)" {
         const NumOpts = struct {
             nums: []i32 = &.{},
         };
-        const meta = .{ .options = .{ .nums = .{ .short = 'n' } } };
+        const meta = .{ .options = .{ .nums = .{ .short = 'n', .delimiter = ',' } } };
         const parsed = try parseOptionsWithMeta(NumOpts, meta, allocator, null, &args, null);
         defer cleanupOptions(NumOpts, parsed.options, allocator);
         try std.testing.expectEqual(@as(usize, 500), parsed.options.nums.len);
@@ -1966,4 +1980,47 @@ test "diagnostics: resource-limit sites report which cap tripped" {
     try std.testing.expectError(ZcliError.ResourceLimitExceeded, parseOptions(Options, allocator, &args, &diag));
     try std.testing.expectEqualStrings("option name length", diag.?.ResourceLimitExceeded.limit_type);
     try std.testing.expectEqual(@as(usize, 300), diag.?.ResourceLimitExceeded.actual_value);
+}
+
+test "literal repeatable values preserve boundaries for every spelling" {
+    const O = struct { ac: []const []const u8 = &.{} };
+    const meta = .{ .options = .{ .ac = .{ .short = 'a' } } };
+    inline for (.{
+        .{ "--ac", "a, b", "--ac", "c" },
+        .{ "--ac=a, b", "--ac=c" },
+        .{ "-a", "a, b", "-a", "c" },
+        .{ "-aa, b", "-ac" },
+        .{ "-a=a, b", "-a=c" },
+    }) |argv| {
+        const parsed = try parseOptionsWithMeta(O, meta, std.testing.allocator, null, &argv, null);
+        defer cleanupOptions(O, parsed.options, std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 2), parsed.options.ac.len);
+        try std.testing.expectEqualStrings("a, b", parsed.options.ac[0]);
+        try std.testing.expectEqualStrings("c", parsed.options.ac[1]);
+    }
+    const empty = try parseOptionsWithMeta(O, meta, std.testing.allocator, null, &.{"--ac="}, null);
+    defer cleanupOptions(O, empty.options, std.testing.allocator);
+    try std.testing.expectEqualStrings("", empty.options.ac[0]);
+}
+
+test "stdin requests are CLI-only and follow final scalar value" {
+    const O = struct { goal: ?[]const u8 = null, body: []const u8 = "-", literal: []const u8 = "-", verbose: bool = false };
+    const meta = .{ .options = .{ .goal = .{ .short = 'g', .stdin = true, .env = "GOAL" }, .body = .{ .stdin = true }, .verbose = .{ .short = 'v' } } };
+    inline for (.{ .{ "--goal", "-" }, .{"--goal=-"}, .{ "-g", "-" }, .{"-g-"}, .{"-g=-"}, .{"-vg-"} }) |argv| {
+        const parsed = try parseOptionsWithMeta(O, meta, std.testing.allocator, null, &argv, null);
+        try std.testing.expect(parsed.stdin_requested[0]);
+        try std.testing.expect(!parsed.stdin_requested[1]);
+        try std.testing.expect(!parsed.stdin_requested[2]);
+    }
+    const last_literal = try parseOptionsWithMeta(O, meta, std.testing.allocator, null, &.{ "--goal=-", "-gtext" }, null);
+    try std.testing.expect(!last_literal.stdin_requested[0]);
+    try std.testing.expectEqualStrings("text", last_literal.options.goal.?);
+    const last_stdin = try parseOptionsWithMeta(O, meta, std.testing.allocator, null, &.{ "--goal=text", "-g-" }, null);
+    try std.testing.expect(last_stdin.stdin_requested[0]);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("GOAL", "-");
+    const from_env = try parseOptionsWithMeta(O, meta, std.testing.allocator, &env, &.{}, null);
+    try std.testing.expect(!from_env.stdin_requested[0]);
+    try std.testing.expectEqualStrings("-", from_env.options.goal.?);
 }

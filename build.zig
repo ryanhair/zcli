@@ -80,6 +80,37 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&pkg_test.step);
     }
 
+    // Editor terminal integration lives in the root graph so prompts does not
+    // depend on testing (whose typed-command tier depends on core/prompts).
+    {
+        const fixture = b.addExecutable(.{
+            .name = "prompts-editor-fixture",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/prompts/test/editor_fixture.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        fixture.root_module.addImport("prompts", prompts_dep.module("prompts"));
+        const fixture_path = b.addOptions();
+        fixture_path.addOptionPath("path", fixture.getEmittedBin());
+        const test_module = b.createModule(.{
+            .root_source_file = b.path("packages/prompts/test/editor_pty.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        test_module.addOptions("editor_fixture_path", fixture_path);
+        test_module.addImport("testing_e2e", testing_dep.module("e2e"));
+        const tests = b.addTest(.{ .root_module = test_module });
+        const check = b.step("check-editor", "Compile editor terminal integration and fixture without executing");
+        check.dependOn(&tests.step);
+        check.dependOn(&fixture.step);
+        const run = b.addRunArtifact(tests);
+        b.step("test-editor", "Run editor terminal integration tests").dependOn(&run.step);
+        test_step.dependOn(&run.step);
+        b.top_level_steps.get("test-prompts").?.step.dependOn(&run.step);
+    }
+
     // Forward core's specialized steps so they run from the repo root too.
     // Most are deliberately NOT part of the aggregate `test`: the secrets
     // steps link native libraries / touch the OS keychain (ADR-0003), and the
@@ -88,7 +119,7 @@ pub fn build(b: *std.Build) void {
     // deterministic and coverage-guided entry points.
     var regression_step: *std.Build.Step = undefined;
     var core_regression_step: *std.Build.Step = undefined;
-    for ([_][]const u8{ "test-secrets", "test-secrets-live", "benchmark", "regression", "fuzz-smoke", "fuzz" }) |name| {
+    for ([_][]const u8{ "test-secrets", "test-secrets-live", "benchmark", "regression", "fuzz-smoke", "fuzz", "test-invocation-policy", "test-metadata-validation" }) |name| {
         const core_step = core_dep.builder.top_level_steps.get(name) orelse
             std.debug.panic("core package does not define a '{s}' step", .{name});
         const forwarded = b.step(name, core_step.description);

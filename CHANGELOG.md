@@ -4,6 +4,39 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
+## Unreleased
+
+### Breaking
+
+- Repeatable options now preserve each supplied argument as one element. Declare
+  `.delimiter = ','` in option metadata to accept comma-delimited values. Shell
+  quoting no longer loses literal commas in repeatable free-text fields.
+- Invocation failures retain their status independently of how they are rendered.
+  Plugin informational handling, input loading, and operational preparation have
+  distinct lifecycle stages. Application failures are described and rendered
+  through the same path as framework diagnostics; `context.fail()` records its
+  explanation for rendering during invocation finalization.
+- Editor operations report unsuccessful editor termination instead of returning
+  the original document, and preserve successful content without stripping trailing
+  newlines.
+
+### Added
+
+- Owned, non-exiting invocation results and an invocation testing harness share the
+  production lifecycle. Applications can configure framework exit statuses and
+  describe, map, and render application failures without calling `context.exit()`.
+- Project-local plugins receive the same `shared_modules` imports as commands and
+  command tests.
+- Opted-in text options can read stdin when explicitly passed `-`, preserving empty
+  input and trailing newlines. Parsing itself remains free of stream reads.
+- A reusable immediate editor operation supports explicit argv, quoted editor
+  environment commands, terminal attachment with redirected stdout, and recovery
+  details for failed edits.
+- Static tables support terminal-aware widths, alignment, and overflow while
+  preserving full content in redirected output.
+- Plugins can declare typed per-command configuration with defaults. Commands
+  override it by plugin namespace; aliases retain their target's configuration.
+
 ## v0.25.0 — 2026-08-24
 
 ### Added

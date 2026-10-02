@@ -131,10 +131,7 @@ const registry = @import("command_registry");
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var app = registry.init();
-    app.run(init.gpa, init.io, init.environ_map, args) catch |err| switch (err) {
-        error.CommandNotFound => std.process.exit(1),
-        else => return err,
-    };
+    try app.run(init.gpa, init.io, init.environ_map, args);
 }
 ```
 
@@ -217,6 +214,12 @@ const pw = try p.password(.{
 });
 ```
 
+For an explicit edit command, `context.prompts().edit(config)` opens the editor
+immediately, including when stdout is redirected. It returns owned edited bytes
+or structured failure and recovery information; it requires a controlling terminal.
+The `editor` prompt keeps its invitation and noninteractive stdin fallback.
+See [the editor API](packages/prompts/README.md#editing-a-document).
+
 Also: `confirm`, `multiSelect`, `number` (range-validated), and `editor` (opens `$EDITOR`). Searchable selection is `p.select(.{ .search = true, ... })` or `p.multiSelect(.{ .search = true, ... })`. Full API in [packages/prompts](packages/prompts/).
 
 ## Progress indicators
@@ -238,6 +241,22 @@ bar.finish();
 ```
 
 Nine spinner styles, plus stacked multi-bars for parallel work; animations auto-disable when not a TTY, symbols adapt to unicode support. Details in [packages/progress](packages/progress/).
+
+## Scriptable input and output
+
+Repeatable options collect one complete value per occurrence, preserving literal
+commas. Opt into shorthand with `.delimiter = ','` in option metadata. Scalar
+and optional text options can opt into `.stdin = true`, so an explicit CLI value
+of `-` reads stdin without trimming newlines.
+
+For a list command, `context.table().print(columns, rows)` prints a static table
+without opening an interactive session. Terminal output can wrap or truncate to
+fit; redirected output preserves full cell content without color.
+
+Applications configure framework exit statuses in `zcli.generate` and can supply
+a failure policy for domain errors and structured output. `context.fail()` and
+`context.failWith()` attach explanations for the invocation to render during
+finalization. See [error handling](docs/ERROR_HANDLING.md).
 
 ## The CLI/TUI hybrid
 
@@ -300,6 +319,10 @@ Discovery order and formats: [zcli.sh/docs/config](https://zcli.sh/docs/config/)
 
 Cross-cutting features are plugins, added in one line of `build.zig`: help, version, "did you mean?", shell completions (bash/zsh/fish/PowerShell), config files, OS-keychain secrets, and self-upgrade via GitHub releases all ship in the box. Plugins hook the command lifecycle, register global options, expose typed data as `context.plugins.<id>`, and can ship commands of their own.
 
+Local plugins receive the project's `shared_modules` imports. Plugins can declare
+a defaulted `CommandConfig` schema; commands override it through `meta.plugins`,
+and hooks read the resolved values through `context.command_config.<id>`.
+
 The full list and a guide to writing your own: [zcli.sh/plugins](https://zcli.sh/plugins/) (repo summary in [docs/PLUGINS.md](docs/PLUGINS.md)).
 
 ## Testing
@@ -321,6 +344,11 @@ test "deploy command" {
     try std.testing.expect(result.term.hasAttribute(0, 0, .bold));
 }
 ```
+
+`runCommand` calls `execute` directly with typed inputs. For parsing, plugin
+lifecycle, stdin option resolution, and exit-policy assertions, use
+`runInvocation` with the real generated registry; it captures output and returns
+an owned invocation result without exiting the test process.
 
 `result.term` is a real ANSI-parsing terminal emulator ([vterm](packages/vterm/)). Two more tiers — subprocess integration tests and snapshot tests — are covered at [zcli.sh/testing](https://zcli.sh/testing/).
 
@@ -422,10 +450,10 @@ The trust model and the key rotation/compromise procedure live in [docs/RELEASE-
 ## Stability & the road to 1.0
 
 zcli is pre-1.0: breaking changes can land in minor versions and are always
-called out in the CHANGELOG; patch versions are always safe. The core command
-contract (`meta`/`Args`/`Options`/`execute`), the plugin hooks, and the
-`build.zig` integration have been stable across releases — the remaining churn is
-scoped and mechanical.
+called out in the CHANGELOG; patch versions are always safe. The command
+contract is `meta`/`Args`/`Options`/`execute`; lifecycle and failure-policy
+contracts are documented in [docs/PLUGINS.md](docs/PLUGINS.md) and
+[docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
 
 If you're evaluating whether to adopt now or wait, [ROADMAP.md](ROADMAP.md) lays
 out what freezes at 1.0, what stays deliberately open, what must land first, and

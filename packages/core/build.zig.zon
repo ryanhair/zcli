@@ -93,5 +93,6 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "test",
     },
 }

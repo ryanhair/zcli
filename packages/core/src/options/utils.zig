@@ -240,6 +240,26 @@ pub fn isArrayType(comptime T: type) bool {
     return true;
 }
 
+/// A delimiter is optional: one option occurrence normally contributes one
+/// array element. Commands may opt into a one-byte separator for list syntax.
+pub fn delimiterForField(comptime meta: anytype, comptime field_name: []const u8) ?u8 {
+    if (@TypeOf(meta) == @TypeOf(null)) return null;
+    if (!@hasField(@TypeOf(meta), "options")) return null;
+    if (!@hasField(@TypeOf(meta.options), field_name)) return null;
+    const field_meta = @field(meta.options, field_name);
+    if (!@hasField(@TypeOf(field_meta), "delimiter")) return null;
+    return field_meta.delimiter;
+}
+
+pub fn stdinForField(comptime meta: anytype, comptime field_name: []const u8) bool {
+    if (@TypeOf(meta) == @TypeOf(null)) return false;
+    if (!@hasField(@TypeOf(meta), "options")) return false;
+    if (!@hasField(@TypeOf(meta.options), field_name)) return false;
+    const field_meta = @field(meta.options, field_name);
+    if (!@hasField(@TypeOf(field_meta), "stdin")) return false;
+    return field_meta.stdin;
+}
+
 /// A *required* option: a field with no well-defined value when its flag is
 /// absent — not a boolean flag (false), not optional (null), not an accumulating
 /// array (empty), and with no declared default. The type itself says the value

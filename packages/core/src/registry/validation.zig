@@ -77,6 +77,24 @@ pub fn validateComposition(
             plugin_types.validatePlugin(Plugin);
         }
 
+        // Typed, namespaced per-command plugin settings. The plugin list is
+        // available only at composition time, so validate these after the
+        // ordinary per-command metadata shape checks above.
+        for (new_plugins, 0..) |Plugin, i| {
+            if (!@hasDecl(Plugin, "CommandConfig")) continue;
+            for (new_plugins[0..i]) |Prev| {
+                if (@hasDecl(Prev, "CommandConfig") and
+                    std.mem.eql(u8, Prev.plugin_id, Plugin.plugin_id))
+                {
+                    @compileError("Plugins '" ++ @typeName(Prev) ++ "' and '" ++ @typeName(Plugin) ++
+                        "' both declare CommandConfig with plugin_id '" ++ Plugin.plugin_id ++ "'");
+                }
+            }
+        }
+        for (cmd_entries ++ plugin_cmd_entries) |cmd| {
+            validatePluginCommandConfig(comptimeJoinPath(cmd.path), cmd.module, new_plugins);
+        }
+
         // ── Command-path uniqueness ─────────────────────────────────────────
         // The router resolves a path to exactly one module; a duplicate would
         // silently shadow. Three distinct messages so the author knows which
@@ -189,6 +207,35 @@ pub fn validateComposition(
                     }
                 }
             }
+        }
+    }
+}
+
+fn validatePluginCommandConfig(comptime path: []const u8, comptime Module: type, comptime plugins: []const type) void {
+    if (!@hasDecl(Module, "meta") or !@hasField(@TypeOf(Module.meta), "plugins")) return;
+    const overrides = Module.meta.plugins;
+    inline for (@typeInfo(@TypeOf(overrides)).@"struct".fields) |field| {
+        const id = field.name;
+        const Plugin = comptime blk: {
+            for (plugins) |P| {
+                if (@hasDecl(P, "CommandConfig") and std.mem.eql(u8, P.plugin_id, id)) break :blk P;
+            }
+            @compileError("command '" ++ path ++ "' meta.plugins." ++ id ++
+                " does not name a registered plugin with CommandConfig");
+        };
+        const provided = @field(overrides, id);
+        if (@typeInfo(@TypeOf(provided)) != .@"struct") {
+            @compileError("command '" ++ path ++ "' meta.plugins." ++ id ++ " must be a struct");
+        }
+        inline for (@typeInfo(@TypeOf(provided)).@"struct".fields) |config_field| {
+            if (!@hasField(Plugin.CommandConfig, config_field.name)) {
+                @compileError("command '" ++ path ++ "' meta.plugins." ++ id ++
+                    " has unknown field '" ++ config_field.name ++ "'");
+            }
+        }
+        var typed: Plugin.CommandConfig = .{};
+        inline for (@typeInfo(@TypeOf(provided)).@"struct".fields) |config_field| {
+            @field(typed, config_field.name) = @field(provided, config_field.name);
         }
     }
 }

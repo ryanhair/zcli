@@ -42,7 +42,7 @@ pub fn computeEntriesWithAliases(
         if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "aliases")) {
             for (Module.meta.aliases) |alias| {
                 result = result ++ [_]CommandEntry{
-                    .{ .path = buildAliasPath(path_components, alias), .module = Module },
+                    .{ .path = buildAliasPath(path_components, alias), .canonical_path = path_components, .module = Module },
                 };
             }
         }
@@ -62,11 +62,18 @@ pub const Config = struct {
     /// arbitrary-file-read primitive. Set from `GenerateConfig.response_files`;
     /// the generated registry emits it as a literal.
     response_files: bool = false,
+    /// Maximum bytes read for an opted-in text option explicitly passed "-".
+    stdin_max_bytes: usize = 16 * 1024 * 1024,
+    /// Nonzero default statuses for framework categories and explained failures.
+    exit_codes: @import("../failure.zig").ExitCodes = .{},
+    /// Application module with optional error_codes, describeFailure, renderFailure.
+    failure_policy: type = struct {},
 };
 
 /// Command entry for the registry
 pub const CommandEntry = struct {
     path: []const []const u8,
+    canonical_path: ?[]const []const u8 = null,
     module: type,
 };
 
@@ -118,6 +125,11 @@ fn validateAppName(comptime app_name: []const u8) void {
 pub const Registry = struct {
     pub fn init(comptime config: Config) RegistryBuilder(config, &.{}, &.{}) {
         comptime validateAppName(config.app_name);
+        comptime {
+            for (std.meta.fields(@TypeOf(config.exit_codes))) |field| {
+                if (@field(config.exit_codes, field.name) == 0) @compileError("exit_codes." ++ field.name ++ " must be nonzero");
+            }
+        }
         return RegistryBuilder(config, &.{}, &.{}).init();
     }
 };

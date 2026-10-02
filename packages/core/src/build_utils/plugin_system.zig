@@ -211,6 +211,7 @@ pub const ReservedPluginIdentifier = struct {
 /// gets (see module_names.zig). A plugin sanitizing to one of these would emit
 /// a duplicate top-level decl in the generated registry.
 fn isReservedPluginIdentifier(id: []const u8) bool {
+    if (std.mem.eql(u8, id, "__zcli_failure_policy")) return true;
     if (std.mem.eql(u8, id, "std")) return true;
     if (std.mem.eql(u8, id, "zcli")) return true;
     if (std.mem.startsWith(u8, id, "cmd_")) return true;

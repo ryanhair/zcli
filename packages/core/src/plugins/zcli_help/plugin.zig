@@ -23,7 +23,7 @@ pub const plugin_id = "zcli_help";
 
 /// Help wins over --version when both are present: the plugin pipeline sorts
 /// plugins by priority (higher first) and runs their hooks in that order, so a
-/// value above the version plugin's 90 makes our preExecute render help first.
+/// value above the version plugin's 90 makes our showInformation render help first.
 pub const priority = 100;
 
 /// Plugin-specific context data (type-safe, stored in computed Context)
@@ -78,7 +78,38 @@ pub fn transformArgs(
 }
 
 /// Pre-execute hook to show help if requested
-pub fn preExecute(
+pub fn handleInformation(context: anytype) !zcli.InvocationAction {
+    if ((try showInformation(context, .{})) == null) return .complete;
+    if (comptime @hasField(@TypeOf(context.plugins), "zcli_version")) {
+        if (context.plugins.zcli_version.version_requested) return .proceed;
+    }
+    if (context.command_arguments.len != 0) return .proceed;
+    // Bare application/group help is successful informational output. An
+    // unknown descendant is still a routing failure, never recovered by help.
+    if (context.command_path.len == 0 and context.command_module_info == null) {
+        try app_help.showApp(context, false);
+        return .complete;
+    }
+    if (context.command_module_info == null or (!context.command_module_info.?.has_args and !context.command_module_info.?.has_options)) {
+        for (context.getAvailableCommandInfo()) |info| {
+            if (info.path.len <= context.command_path.len) continue;
+            var matches = true;
+            for (context.command_path, 0..) |part, i| {
+                if (!std.mem.eql(u8, part, info.path[i])) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                _ = try renderRoutingError(context, error.CommandNotFound);
+                return .complete;
+            }
+        }
+    }
+    return .proceed;
+}
+
+fn showInformation(
     context: anytype,
     args: zcli.ParsedArgs,
 ) !?zcli.ParsedArgs {
@@ -109,8 +140,14 @@ pub fn preExecute(
     return args;
 }
 
-/// Error hook to handle command group help
-pub fn onError(
+/// Render fallback group help without changing the failure outcome.
+pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+    if (failure.category != .unknown_command) return false;
+    if (context.command_arguments.len != 0) return false;
+    return renderRoutingError(context, failure.cause);
+}
+
+fn renderRoutingError(
     context: anytype,
     err: anyerror,
 ) !bool {
@@ -127,7 +164,7 @@ pub fn onError(
         // reaction (CommandNotFound), so it goes to stderr.
         if (context.command_path.len == 0) {
             try app_help.showApp(context, false);
-            return true; // Error handled, don't let it propagate
+            return true; // Presentation complete; failure status is preserved.
         }
 
         // Check if this looks like a command group (has subcommands)
@@ -173,13 +210,13 @@ pub fn onError(
                     context.command_path = prefix;
                     // Reached from an error (a bare command group) → stderr.
                     try command_help.showCommand(context, false);
-                    return true; // Error handled, don't let it propagate
+                    return true; // Presentation complete; failure status is preserved.
                 }
             }
         }
     }
 
-    return false; // Error not handled
+    return false; // Let another renderer explain the failure.
 }
 
 /// Commands provided by this plugin
@@ -218,7 +255,7 @@ test {
 test "help plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "global_options"));
     try std.testing.expect(@hasDecl(@This(), "handleGlobalOption"));
-    try std.testing.expect(@hasDecl(@This(), "preExecute"));
+    try std.testing.expect(@hasDecl(@This(), "showInformation"));
     try std.testing.expect(@hasDecl(@This(), "commands"));
     try std.testing.expect(@hasDecl(@This(), "ContextData"));
     try std.testing.expect(@hasDecl(@This(), "isHelpRequested"));

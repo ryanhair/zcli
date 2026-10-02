@@ -28,7 +28,7 @@ zig build examples          # binaries land in zig-out/bin/prompts-<name>
 | `multi_select_search` | `prompts.multiSelect` | chosen indices      | `.search`, hidden choices stay selected            |
 | `password`            | `prompts.password`    | masked string       | `mask`, call-site length validation + re-prompt    |
 | `number`              | `prompts.number`      | `i64`               | `default`, `min`/`max` range (re-prompts)          |
-| `editor`              | `prompts.editor`      | text from an editor | `editor_cmd` (from `$EDITOR`), `extension`, `io`   |
+| `editor`              | `prompts.editor`      | text from an editor | `environ` (`$VISUAL`/`$EDITOR`), `extension`, `io`   |
 
 ## Notes
 
@@ -59,3 +59,8 @@ zig build examples          # binaries land in zig-out/bin/prompts-<name>
   returns `error.EndOfStream` instead of an empty entry. That keeps a closed
   stream distinguishable from a submitted blank line, so a re-prompt loop can
   break on it rather than spin forever — see `password.zig` for the idiom.
+
+For an explicit edit command, use the separate `edit` operation described in the
+[package README](../README.md#editing-a-document). It launches immediately, keeps
+working with redirected stdout, and returns structured failure/recovery data.
+The `editor` example demonstrates the invitation prompt and its stdin fallback.

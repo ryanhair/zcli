@@ -79,8 +79,8 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     try finish(context.stdout(), &context.theme, file_path, hasPluginsDir(arena, io));
 }
 
-/// A guided plugin skeleton (ADR-0006): a header, one working pass-through
-/// `preExecute` hook, and a commented catalog of the remaining hooks with exact
+/// A guided plugin skeleton (ADR-0006): a header, one working preparation
+/// `prepare` hook, and a commented catalog of the remaining hooks with exact
 /// signatures. `plugin_id`/`ContextData` are commented out — a minimal plugin
 /// needs neither (hooks are `@hasDecl`-gated; `plugin_id` is only required
 /// alongside `ContextData`).
@@ -101,13 +101,11 @@ fn generatePlugin(arena: std.mem.Allocator, name: []const u8, description: []con
         \\///
         \\/// Plugins shape command execution through optional hooks, each discovered
         \\/// by name (@hasDecl-gated) — declare only the ones you need. This skeleton
-        \\/// wires a pass-through `preExecute`; uncomment others from the catalog below.
+        \\/// wires a no-op `prepare`; uncomment others from the catalog below.
         \\
-        \\/// Runs before a command's execute(). Return `args` to continue, or `null`
-        \\/// to halt the pipeline (e.g. after handling a global flag yourself).
-        \\pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {{
+        \\/// Runs after input validation and before execute(). Return an error to stop.
+        \\pub fn prepare(context: anytype) !void {{
         \\    _ = context;
-        \\    return args;
         \\}}
         \\
     , .{ name, description });
@@ -140,18 +138,35 @@ fn generatePlugin(arena: std.mem.Allocator, name: []const u8, description: []con
         \\//     return null;
         \\// }
         \\
-        \\// Runs after a command's execute(); `success` is false if it errored.
-        \\// pub fn postExecute(context: anytype, success: bool) !void {
+        \\// Runs at invocation completion, including setup failures; success describes the outcome.
+        \\// pub fn onFinish(context: anytype, success: bool) !void {
         \\//     _ = context;
         \\//     _ = success;
         \\// }
         \\
-        \\// Handle an error raised during execution. Return `true` if you handled it
-        \\// (which suppresses the framework's default handling).
-        \\// pub fn onError(context: anytype, err: anyerror) !bool {
+        \\// Add an explanation without turning a failure into success.
+        \\// pub fn describeFailure(context: anytype, failure: zcli.Failure) !?zcli.failure.Description {
         \\//     _ = context;
-        \\//     _ = err;
+        \\//     _ = failure;
+        \\//     return null;
+        \\// }
+        \\
+        \\// Render a failure. true means rendered; its status remains nonzero.
+        \\// pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+        \\//     _ = context;
+        \\//     _ = failure;
         \\//     return false;
+        \\// }
+        \\
+        \\// Handle help-like requests before config, validation, or preparation.
+        \\// pub fn handleInformation(context: anytype) !zcli.InvocationAction {
+        \\//     _ = context;
+        \\//     return .proceed; // return .complete after producing the requested output
+        \\// }
+        \\
+        \\// Load lower-precedence input data before resolved-value validation.
+        \\// pub fn loadConfig(context: anytype) !void {
+        \\//     _ = context;
         \\// }
         \\
         \\// Provide and handle global options (available on every command).
@@ -165,7 +180,7 @@ fn generatePlugin(arena: std.mem.Allocator, name: []const u8, description: []con
         \\// }
         \\
         \\// Per-plugin state, reachable as `context.plugins.<plugin_id>`. `plugin_id`
-        \\// is REQUIRED whenever `ContextData` is present (and only then).
+        \\// is REQUIRED whenever `ContextData` or `CommandConfig` is present.
         \\
     );
     try w.print("// pub const plugin_id = \"{s}\";\n", .{name});
@@ -218,7 +233,7 @@ fn finish(w: *std.Io.Writer, theme: *const ThemeContext, file_path: []const u8, 
     }
 
     try w.writeAll("\n\n  Next steps\n");
-    try w.print("    1. Implement the preExecute hook (or uncomment others) in {s}\n", .{file_path});
+    try w.print("    1. Implement the prepare hook (or uncomment others) in {s}\n", .{file_path});
     try w.writeAll("    2. zig build\n");
 }
 
@@ -233,16 +248,16 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 
 const testing = std.testing;
 
-test "generatePlugin: wires a pass-through preExecute and a commented catalog" {
+test "generatePlugin: wires a no-op prepare and a commented catalog" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     const src = try generatePlugin(a, "telemetry", "Track usage");
     try testing.expect(std.mem.indexOf(u8, src, "The `telemetry` plugin — Track usage") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs") != null);
+    try testing.expect(std.mem.indexOf(u8, src, "pub fn prepare(context: anytype) !void") != null);
     // Catalog hooks are present but commented out.
-    try testing.expect(std.mem.indexOf(u8, src, "// pub fn onError(context: anytype, err: anyerror) !bool") != null);
+    try testing.expect(std.mem.indexOf(u8, src, "// pub fn describeFailure(context: anytype, failure: zcli.Failure) !?zcli.failure.Description") != null);
     try testing.expect(std.mem.indexOf(u8, src, "// pub const plugin_id = \"telemetry\";") != null);
     try expectParses(a, src);
 }
@@ -253,7 +268,7 @@ test "generatePlugin: only the working hook is uncommented" {
     const a = arena.allocator();
 
     const src = try generatePlugin(a, "auth", "x");
-    // Exactly one uncommented `pub fn` (preExecute); the rest are `// pub fn`.
+    // Exactly one uncommented `pub fn` (prepare); the rest are `// pub fn`.
     var count: usize = 0;
     var it = std.mem.splitScalar(u8, src, '\n');
     while (it.next()) |ln| {

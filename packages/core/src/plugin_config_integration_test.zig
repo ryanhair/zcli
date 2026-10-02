@@ -1,5 +1,5 @@
 //! Integration tests for the zcli_config plugin: a real config file on disk,
-//! driven end-to-end through `preExecute` (discovery + read) and
+//! driven end-to-end through `loadConfig` (discovery + read) and
 //! `applyConfigDefaults` (coercion + precedence), via a minimal duck-typed
 //! context — the shape the registry passes. Complements the in-file unit tests
 //! (which drive the apply functions directly).
@@ -85,11 +85,10 @@ test "integration: --config path drives coercion for every type through the real
 
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
-    // The --config global option handler stores this before preExecute runs.
+    // The --config global option handler stores this before loadConfig runs.
     ctx.plugins.zcli_config.custom_path = abs;
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
     try testing.expect(ctx.plugins.zcli_config.format.? == .json);
 
     const Color = enum { red, green, blue };
@@ -127,7 +126,7 @@ test "integration: cwd discovery finds .{app}.config.toml (via chdir into tmp)" 
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = ".myapp.config.toml", .data = "count = 42\n" });
 
-    // preExecute discovers relative to the process cwd; point it at tmp for the
+    // loadConfig discovers relative to the process cwd; point it at tmp for the
     // duration of this test, then restore. (Serial test file — no other test
     // depends on cwd concurrently.)
     var orig_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
@@ -139,8 +138,7 @@ test "integration: cwd discovery finds .{app}.config.toml (via chdir into tmp)" 
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
     try testing.expect(ctx.plugins.zcli_config.format != null);
     try testing.expect(ctx.plugins.zcli_config.format.? == .toml);
 
@@ -170,8 +168,7 @@ test "integration: required option satisfied by config (through parseCommandLine
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     // `token` is a required option (no default, non-optional). Nothing on the
     // CLI supplies it — parse yields the placeholder + provided[i] == false.
@@ -213,8 +210,7 @@ test "integration: YAML quoted command keys decode through the config pipeline" 
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     const Opts = struct {
         output: []const u8 = "text",
@@ -253,8 +249,7 @@ test "integration: a no_config field is not set from a config file that supplies
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     const Opts = struct {
         skip_verification: bool = false,
@@ -359,8 +354,7 @@ test "integration: a no_config REQUIRED option is left unset by the real plugin"
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     // Both required (no default, non-optional, non-bool, non-array).
     const Opts = struct {
@@ -408,8 +402,7 @@ test "integration: a no_config multi-value option is not filled from a config li
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     // Arrays are the case where a config write ALLOCATES, so they are where the
     // marker has to hold at the coercion path rather than at a scalar store.
@@ -463,8 +456,7 @@ test "integration: required option satisfied by a placeholder-equal config value
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     const Opts = struct { offset: u32, format: enum { json, yaml } };
     const result = try zcli.parseCommandLine(struct {}, Opts, null, alloc, &environ, &.{}, null);
@@ -500,8 +492,7 @@ test "integration: CLI-provided value beats config (equal-to-default regression)
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     // User typed --count 5, which equals the struct default. The provided bitset
     // (not a value comparison) records that the CLI set it.
@@ -535,8 +526,7 @@ test "integration: env-provided value beats config" {
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
     ctx.plugins.zcli_config.custom_path = abs;
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     // The env fallback sets count=99 and marks it provided; config's 10 must lose.
     const Opts = struct { count: u32 = 0 };
@@ -557,7 +547,7 @@ test "integration: env-provided value beats config" {
 //
 // Discovering `.{app}.config.{ext}` from the process cwd means an attacker-
 // controlled directory (e.g. a cloned repo) can silently supply defaults.
-// preExecute must print a one-line stderr notice naming the file whenever a
+// loadConfig must print a one-line stderr notice naming the file whenever a
 // project-local config is actually loaded — but stay silent for an explicit
 // --config path and for the user-level (home/XDG) config, since those aren't
 // cwd-controlled by whatever directory the CLI happens to run in.
@@ -582,8 +572,7 @@ test "integration: notice printed when a project-local (cwd) config is applied" 
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     const written = aw.written();
     try testing.expect(std.mem.indexOf(u8, written, "note:") != null);
@@ -611,8 +600,7 @@ test "integration: no notice when no cwd config exists" {
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     try testing.expect(std.mem.indexOf(u8, aw.written(), "note:") == null);
 
@@ -636,8 +624,7 @@ test "integration: no notice for an explicit --config path" {
     var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
     ctx.plugins.zcli_config.custom_path = abs;
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
 
     try testing.expect(std.mem.indexOf(u8, aw.written(), "note:") == null);
 
@@ -684,8 +671,7 @@ test "integration: no notice for a user-level (platform config dir) config" {
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
     try testing.expect(ctx.plugins.zcli_config.format != null); // sanity: config was found
 
     try testing.expect(std.mem.indexOf(u8, aw.written(), "note:") == null);
@@ -714,8 +700,7 @@ test "integration: multiple config files warn about ambiguity" {
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
 
-    const args = zcli.ParsedArgs.init(alloc);
-    _ = try config.preExecute(&ctx, args);
+    try config.loadConfig(&ctx);
     try testing.expect(std.mem.indexOf(u8, aw.written(), "multiple config files") != null);
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);

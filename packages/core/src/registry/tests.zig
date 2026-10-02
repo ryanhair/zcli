@@ -671,7 +671,8 @@ const TestHelpPlugin = struct {
         command_found_error = false;
     }
 
-    pub fn onError(context: anytype, err: anyerror) !bool {
+    pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+        const err = failure.cause;
         _ = context;
         if (err == error.CommandNotFound) {
             command_found_error = true;
@@ -695,25 +696,25 @@ fn createPureCommandTestRegistry() type {
         .build();
 }
 
-test "pure command group behavior: always shows help without error" {
+test "routing failure renderer does not suppress a command group failure" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
-    // Test 1: Pure command group without --help should show help and succeed
+    // A renderer alone can show help but cannot claim informational success.
     TestHelpPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{"network"});
+    try testing.expectError(error.CommandNotFound, runQuiet(&app, &test_environ, &.{"network"}));
 
     // Should have triggered CommandNotFound -> help showing -> error handled
     try testing.expect(TestHelpPlugin.help_shown);
     try testing.expect(TestHelpPlugin.command_found_error);
 
-    // Test 2: Pure command group with --help should also show help and succeed
+    // This fixture registers no --help global option, so it is a usage error.
     TestHelpPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{ "network", "--help" });
+    try testing.expectError(error.OptionUnknown, runQuiet(&app, &test_environ, &.{ "network", "--help" }));
 
-    // Should have triggered help showing (same behavior regardless of --help)
-    try testing.expect(TestHelpPlugin.help_shown);
+    // The routing-only renderer does not handle malformed options.
+    try testing.expect(!TestHelpPlugin.help_shown);
 }
 
 test "pure command group: subcommands execute normally" {
@@ -727,15 +728,14 @@ test "pure command group: subcommands execute normally" {
     try testing.expect(!TestHelpPlugin.command_found_error); // Should not hit CommandNotFound
 }
 
-test "error handling: plugin returns true prevents error propagation" {
+test "error handling: rendering preserves error propagation" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
-    // This tests the fix - when a plugin handles CommandNotFound by returning true,
-    // the registry should not propagate the error
+    // Rendering claims presentation only; the routing failure still propagates.
     TestHelpPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{"nonexistent"});
+    try testing.expectError(error.CommandNotFound, runQuiet(&app, &test_environ, &.{"nonexistent"}));
 
     // Plugin should have handled the error
     try testing.expect(TestHelpPlugin.command_found_error);
@@ -744,7 +744,7 @@ test "error handling: plugin returns true prevents error propagation" {
 
 // ============================================================================
 // Execution-path semantics (guard the executeResolvedCommand refactor):
-// metadata-only groups, and error/postExecute dispatch.
+// metadata-only groups, and error/onFinish dispatch.
 // ============================================================================
 
 const MetadataOnlyGroup = struct {
@@ -773,7 +773,7 @@ test "metadata-only group without a handling plugin reports CommandNotFound" {
     );
 }
 
-test "metadata-only group routes through onError so the help plugin can render it" {
+test "metadata-only group routes through renderFailure so the help plugin can render it" {
     const TestApp = Registry.init(.{
         .app_name = "test",
         .app_version = "1.0.0",
@@ -786,7 +786,7 @@ test "metadata-only group routes through onError so the help plugin can render i
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     TestHelpPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{"group"});
+    try testing.expectError(error.CommandNotFound, runQuiet(&app, &test_environ, &.{"group"}));
     try testing.expect(TestHelpPlugin.command_found_error);
 }
 
@@ -816,13 +816,14 @@ const PostExecuteCapturePlugin = struct {
         seen_error = null;
     }
 
-    pub fn onError(context: anytype, err: anyerror) !bool {
+    pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+        const err = failure.cause;
         _ = context;
         seen_error = err;
         return err == error.Boom; // handle command failures, not routing errors
     }
 
-    pub fn postExecute(context: anytype, success: bool) !void {
+    pub fn onFinish(context: anytype, success: bool) !void {
         _ = context;
         post_execute_success = success;
     }
@@ -840,7 +841,7 @@ fn createPostExecuteTestRegistry() type {
         .build();
 }
 
-test "successful execution reaches postExecute with success=true" {
+test "successful execution reaches onFinish with success=true" {
     const TestApp = createPostExecuteTestRegistry();
     var app = TestApp.init();
     const test_environ = std.process.Environ.Map.init(testing.allocator);
@@ -851,15 +852,14 @@ test "successful execution reaches postExecute with success=true" {
     try testing.expectEqual(@as(?anyerror, null), PostExecuteCapturePlugin.seen_error);
 }
 
-test "handled execution error is suppressed and reaches postExecute with success=false" {
+test "rendered execution error remains failed and reaches onFinish with success=false" {
     const TestApp = createPostExecuteTestRegistry();
     var app = TestApp.init();
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     PostExecuteCapturePlugin.reset();
-    // onError handles error.Boom, so execute() must not propagate it — but
-    // postExecute still observes the failure.
-    try runQuiet(&app, &test_environ, &.{"fail"});
+    // Rendering preserves error.Boom and completion observes failure.
+    try testing.expectError(error.Boom, runQuiet(&app, &test_environ, &.{"fail"}));
     try testing.expectEqual(@as(?anyerror, error.Boom), PostExecuteCapturePlugin.seen_error);
     try testing.expectEqual(@as(?bool, false), PostExecuteCapturePlugin.post_execute_success);
 }
@@ -1034,7 +1034,7 @@ test "alias registration: command without aliases creates single entry" {
 }
 
 // Regression fixture for the diagnostic pipeline: a plugin that records what
-// context.diagnostic held when its onError hook ran, plus a command with a
+// context.diagnostic held when its renderFailure hook ran, plus a command with a
 // typed option to fail parsing against.
 const DiagnosticCapturePlugin = struct {
     var captured: ?zcli.ZcliDiagnostic = null;
@@ -1045,10 +1045,11 @@ const DiagnosticCapturePlugin = struct {
         captured_err = null;
     }
 
-    pub fn onError(context: anytype, err: anyerror) !bool {
+    pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+        const err = failure.cause;
         captured = context.diagnostic;
         captured_err = err;
-        return true; // handled — suppress
+        return true; // rendered; status remains failed
     }
 
     pub const commands = struct {
@@ -1065,7 +1066,7 @@ const DiagnosticCapturePlugin = struct {
     };
 };
 
-test "parse errors run onError with context.diagnostic populated" {
+test "parse errors run renderFailure with context.diagnostic populated" {
     const TestApp = Registry.init(.{
         .app_name = "diag-test",
         .app_version = "1.0.0",
@@ -1079,19 +1080,19 @@ test "parse errors run onError with context.diagnostic populated" {
 
     // Unknown option: the plugin sees the error AND the precise diagnostic.
     DiagnosticCapturePlugin.reset();
-    try runQuiet(&app, &test_environ, &.{ "ping", "--bogus" });
+    try testing.expectError(error.OptionUnknown, runQuiet(&app, &test_environ, &.{ "ping", "--bogus" }));
     try testing.expectEqual(@as(?anyerror, error.OptionUnknown), DiagnosticCapturePlugin.captured_err);
     try testing.expectEqualStrings("bogus", DiagnosticCapturePlugin.captured.?.OptionUnknown.option_name);
 
     // Invalid value: same pipeline, different diagnostic payload.
     DiagnosticCapturePlugin.reset();
-    try runQuiet(&app, &test_environ, &.{ "ping", "--count", "lots" });
+    try testing.expectError(error.OptionInvalidValue, runQuiet(&app, &test_environ, &.{ "ping", "--count", "lots" }));
     try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), DiagnosticCapturePlugin.captured_err);
     try testing.expectEqualStrings("lots", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("count", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.option_name);
 }
 
-// Fixture for the default (no onError plugin) rendering path: a command with
+// Fixture for the default (no renderFailure plugin) rendering path: a command with
 // a typed option, so a bad value falls all the way through to
 // `reportParseError`'s own stderr message instead of being intercepted.
 const EscValueCommand = struct {
@@ -1123,7 +1124,7 @@ test "reportParseError sanitizes a terminal-escape-laced option value" {
     stdio.stderr_override = &err_aw.writer;
 
     // A crafted option value carrying an OSC 52 clipboard-write sequence.
-    // No onError plugin is registered, so this reaches reportParseError's
+    // No renderFailure plugin is registered, so this reaches reportParseError's
     // default "Error: ..." rendering.
     try testing.expectError(error.OptionInvalidValue, app.executeWithStdio(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "--count", "\x1b]52;c;cHduZWQ=\x07" }, &stdio));
 
@@ -1238,10 +1239,11 @@ const TypedGlobalsPlugin = struct {
         }
     }
 
-    pub fn onError(context: anytype, err: anyerror) !bool {
+    pub fn describeFailure(context: anytype, failure: zcli.Failure) !?zcli.failure.Description {
+        const err = failure.cause;
         captured_err = err;
         captured_diag = context.diagnostic;
-        return true;
+        return null;
     }
 
     pub const commands = struct {
@@ -1331,7 +1333,7 @@ test "global options: boolean bundles are all-or-nothing" {
     // (which reports it, instead of the old behavior: consuming the token
     // and silently dropping the unknown chars).
     TypedGlobalsPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{ "ping", "-vx" });
+    try testing.expectError(error.OptionUnknown, runQuiet(&app, &test_environ, &.{ "ping", "-vx" }));
     try testing.expectEqual(@as(?anyerror, error.OptionUnknown), TypedGlobalsPlugin.captured_err);
     try testing.expect(!TypedGlobalsPlugin.command_ran);
 }
@@ -1343,18 +1345,18 @@ test "global options: missing and invalid values produce diagnostics" {
 
     // Value missing at end of argv.
     TypedGlobalsPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{"--level"});
+    try testing.expectError(error.OptionMissingValue, runQuiet(&app, &test_environ, &.{"--level"}));
     try testing.expectEqual(@as(?anyerror, error.OptionMissingValue), TypedGlobalsPlugin.captured_err);
     try testing.expectEqualStrings("level", TypedGlobalsPlugin.captured_diag.?.OptionMissingValue.option_name);
 
     // Next token is a flag, not a value.
     TypedGlobalsPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{ "--level", "--verbose" });
+    try testing.expectError(error.OptionMissingValue, runQuiet(&app, &test_environ, &.{ "--level", "--verbose" }));
     try testing.expectEqual(@as(?anyerror, error.OptionMissingValue), TypedGlobalsPlugin.captured_err);
 
     // Unparseable value.
     TypedGlobalsPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{ "--level", "abc", "ping" });
+    try testing.expectError(error.OptionInvalidValue, runQuiet(&app, &test_environ, &.{ "--level", "abc", "ping" }));
     try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), TypedGlobalsPlugin.captured_err);
     try testing.expectEqualStrings("abc", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("i64", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.expected_type);
@@ -1384,7 +1386,7 @@ test "global options: enum-typed global parses, rejects, and defaults" {
     // An unknown variant is the standard invalid-value diagnostic, not a
     // silent miss — exactly as a command option would report it.
     TypedGlobalsPlugin.reset();
-    try runQuiet(&app, &test_environ, &.{ "--mode", "sideways", "ping" });
+    try testing.expectError(error.OptionInvalidValue, runQuiet(&app, &test_environ, &.{ "--mode", "sideways", "ping" }));
     try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), TypedGlobalsPlugin.captured_err);
     try testing.expectEqualStrings("sideways", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("mode", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.option_name);
@@ -1477,7 +1479,8 @@ const ConstraintCapturePlugin = struct {
         command_ran = false;
     }
 
-    pub fn onError(context: anytype, err: anyerror) !bool {
+    pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+        const err = failure.cause;
         captured_err = err;
         captured_diag = context.diagnostic;
         return true;
@@ -1522,7 +1525,7 @@ test "constraints e2e: exclusive members together are rejected" {
     const env = std.process.Environ.Map.init(testing.allocator);
 
     ConstraintCapturePlugin.reset();
-    try runQuiet(&app, &env, &.{ "run", "--json", "--yaml" });
+    try testing.expectError(error.OptionMutuallyExclusive, runQuiet(&app, &env, &.{ "run", "--json", "--yaml" }));
     try testing.expectEqual(@as(?anyerror, error.OptionMutuallyExclusive), ConstraintCapturePlugin.captured_err);
     try testing.expectEqualStrings("json", ConstraintCapturePlugin.captured_diag.?.OptionMutuallyExclusive.first);
     try testing.expectEqualStrings("yaml", ConstraintCapturePlugin.captured_diag.?.OptionMutuallyExclusive.second);
@@ -1544,7 +1547,7 @@ test "constraints e2e: requires without its dependency is rejected" {
     const env = std.process.Environ.Map.init(testing.allocator);
 
     ConstraintCapturePlugin.reset();
-    try runQuiet(&app, &env, &.{ "run", "--output-format", "pretty" });
+    try testing.expectError(error.OptionMissingDependency, runQuiet(&app, &env, &.{ "run", "--output-format", "pretty" }));
     try testing.expectEqual(@as(?anyerror, error.OptionMissingDependency), ConstraintCapturePlugin.captured_err);
     try testing.expectEqualStrings("output-format", ConstraintCapturePlugin.captured_diag.?.OptionMissingDependency.option_name);
     try testing.expectEqualStrings("output", ConstraintCapturePlugin.captured_diag.?.OptionMissingDependency.required_name);

@@ -115,8 +115,11 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
         \\    .app_version = "{s}",
         \\    .app_description = "{s}",
         \\    .response_files = {},
+        \\    .stdin_max_bytes = {d},
+        \\    .exit_codes = .{{ .usage = {d}, .command_not_found = {d}, .command_failed = {d} }},
+        \\    .failure_policy = {s},
         \\}})
-    , .{ app_name, app_version, app_description, config.response_files });
+    , .{ app_name, app_version, app_description, config.response_files, config.stdin_max_bytes, config.exit_codes.usage, config.exit_codes.command_not_found, config.exit_codes.command_failed, if (config.failure_policy_module != null) "@import(\"__zcli_failure_policy\")" else "struct {}" });
 
     // Register commands
     try generateCommandRegistrations(writer, commands, allocator);

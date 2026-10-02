@@ -7,8 +7,9 @@ not a terminal (so scripts and pipes keep working).
 
 ## Features
 
+- **Immediate editor operation**: `edit` opens an editor independently of stdout redirection and returns an owned edited document or structured failure with a recovery path
 - **Seven primary prompt types**: `text`, `password`, `number`, `confirm`, `select`, `multiSelect`, `editor`
-- **Non-TTY fallback**: redirect either stdin or stdout and every prompt falls back to line input (select prompts print a numbered list)
+- **Non-TTY fallback**: redirect either stdin or stdout and every prompt falls back to stream input (line input for most prompts; editor reads to EOF; select prompts print a numbered list)
 - **Interactive-only guard**: `requireInteractive()` fails with `error.NotInteractive` before the first question, for commands where the fallback makes no sense
 - **Unicode-correct**: UTF-8 input assembly, wide characters, and grapheme-aware backspace via the `terminal` package
 - **Wrap- and resize-safe**: list prompts wrap long options with hang indents and re-render cleanly on terminal resize (SIGWINCH)
@@ -79,6 +80,53 @@ const sure = try p.confirm(.{ .message = "Create it?" });
 The other prompt types follow the same shape: `password` (masked input),
 `multiSelect` (Space toggles and returns owned indices), and `editor` (opens
 `$EDITOR` for multiline text). Plain `select` accepts Space like Enter.
+
+## Editing a document
+
+Use `edit` when editing is the command itself. It opens immediately and attaches
+to the controlling terminal, even when stdout is redirected. It does not use the
+prompt's line-input fallback or `interactive` override.
+
+```zig
+var result = try p.edit(.{
+    .io = io,
+    .environ = environ,
+    .default = initial_document,
+    .extension = ".md",
+});
+defer result.deinit(allocator); // context.allocator for context.prompts()
+switch (result) {
+    .edited => |document| try saveDocument(document),
+    .failed => |failure| {
+        if (failure.recovery_path) |path|
+            try writer.print("Recover your document from {s}\n", .{path});
+        return error.EditorFailed;
+    },
+}
+```
+
+An empty or unchanged saved document is successful. Bytes and final newlines are
+preserved. Expected failures (invalid command, unavailable terminal, scratch-file
+I/O, launch, wait, nonzero or abnormal termination, and read-back) are returned in
+`.failed`; allocation failures remain Zig errors. Changed or unreadable scratch
+files survive by default. Deinitializing the result frees its data and recovery
+path, but does not delete a preserved file. `.recovery = .discard` opts out.
+
+Prefer `.argv = &.{ "code", "--wait" }` for programmatic configuration. The
+scratch filename is appended as one argument. Otherwise `editor_cmd`, `$VISUAL`,
+then `$EDITOR` supply a command string, with `vi` (POSIX) or `notepad` (Windows)
+as the fallback. Command strings support shell-word quoting, not expansion or
+pipelines; invoke a shell explicitly when needed. In particular, use `.argv`
+for Windows paths containing backslashes. The document limit is 128 MiB by default
+(`.max_bytes`); `.attachment = .inherit` explicitly permits noninteractive tools.
+
+The invitation-style `editor` prompt still waits for Enter, or skips that gate
+with `.immediate = true` when interactive. Without a TTY it reads stdin to EOF;
+empty input returns `error.EndOfStream`. Editor failure now returns
+`error.EditorFailed`, `error.EditorLaunchFailed`, or `error.EditorReadFailed`
+instead of silently returning the original document. The prompt reports any
+recovery path before returning the error. Use `edit` for structured failure data.
+See [ADR-0038](../../docs/adr/0038-editor-operation.md).
 
 ## Searchable lists
 

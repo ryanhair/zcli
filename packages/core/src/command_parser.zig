@@ -20,6 +20,7 @@ pub fn CommandParseResult(comptime ArgsType: type, comptime OptionsType: type) t
         /// One flag per Options field, true when env or CLI set it. The registry
         /// combines this with the config pass to enforce required options.
         options_provided: [options_parser.optionFieldCount(OptionsType)]bool = [_]bool{false} ** options_parser.optionFieldCount(OptionsType),
+        stdin_requested: [options_parser.optionFieldCount(OptionsType)]bool = [_]bool{false} ** options_parser.optionFieldCount(OptionsType),
         allocator: ?std.mem.Allocator = null, // Only set if cleanup is needed
         _positional_slice: ?[]const []const u8 = null, // Keep varargs slice alive
 
@@ -131,6 +132,7 @@ pub fn parseCommandLine(
         .args = parsed_args,
         .options = options,
         .options_provided = options_res.provided,
+        .stdin_requested = options_res.stdin_requested,
         .allocator = if (needs_cleanup) allocator else null,
         ._positional_slice = if (has_varargs) positional_slice else blk: {
             // If no varargs, we don't need to keep the slice alive, so free it now
@@ -412,7 +414,7 @@ test "e2e: comma-separated array values through the pre-split" {
 
     // The pre-split must feed the comma token through intact so the options
     // parser can split it; repetition composes with the comma form.
-    const result = try parseCommandLine(struct {}, ArrayOptions, null, allocator, null, &.{ "--files", "a.txt,b.txt", "--files", "c.txt", "--numbers", "1,2,3" }, null);
+    const result = try parseCommandLine(struct {}, ArrayOptions, .{ .options = .{ .files = .{ .delimiter = ',' }, .numbers = .{ .delimiter = ',' } } }, allocator, null, &.{ "--files", "a.txt,b.txt", "--files", "c.txt", "--numbers", "1,2,3" }, null);
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 3), result.options.files.len);

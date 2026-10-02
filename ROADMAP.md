@@ -10,15 +10,14 @@ whether to adopt today or wait.
 
 It is a statement of *intent*, not a delivery contract. **There is no 1.0 date.**
 The freeze list below is the ratified plan for what 1.0 will promise when it
-happens; 0.20 — the last *known* breaking block — has shipped (§3), and 1.0
-ships when the maintainer judges the frozen surfaces have settled — not before.
+happens. The invocation and input/output contracts are still settling (§3);
+1.0 ships when the maintainer judges the frozen surfaces have settled — not before.
 
 ## 1. Where zcli is today
 
 Current release: **v0.25.0** (Zig 0.16.0, Linux/macOS/Windows).
 
-zcli is past the experimental stage. The parts an app is actually built *on* have
-been stable across several releases and are exercised by the framework's own
+The framework is exercised by its own
 meta-CLI (`zcli init/add/mv/rm/tree/dev/guide/release` are all zcli commands) and
 by the CI-compiled canonical examples:
 
@@ -27,7 +26,7 @@ by the CI-compiled canonical examples:
   since the foundation releases; the recent scaffolding tools (`add option/arg`,
   `mv`, `rm`) edit these files in place precisely *because* the contract is
   settled enough to splice mechanically.
-- **The plugin system** — lifecycle hooks (`preExecute`, `onError`,
+- **The plugin system** — lifecycle hooks (`prepare`, `renderFailure`,
   `handleGlobalOption`), `global_options`, plugin-owned commands, and typed
   `context.plugins.<id>` data. Seven plugins ship in-box on this surface (see
   [docs/PLUGINS.md](docs/PLUGINS.md) for the canonical list).
@@ -61,19 +60,23 @@ The two lists below are ratified: this is the line 1.0 will draw.
   signature.
 - **The `context` surface used inside `execute`.** The documented accessors —
   `context.stdout()` / `stderr()`, `context.io`, `context.prompts()`,
-  `context.progress()`, `context.ui()`, `context.theme`, `context.plugins.<id>`,
-  `context.fail()`, and the arena allocator. The promise covers the accessors'
+  `context.progress()`, `context.ui()`, `context.table()`, `context.theme`,
+  `context.plugins.<id>`, `context.command_config.<id>`, `context.fail()`,
+  `context.failWith()`, and the arena allocator. The promise covers the accessors'
   *names and existence*; the shape of Zig std types they return (`context.io` is
   `std.Io`) is explicitly excluded and bounded by Zig's own stability — see the
   Zig-coupling rule in §4.
-- **Process exit codes.** `0` success, `1` command failure (`context.fail`),
-  `2` CLI misuse, `3` command not found, `141` broken pipe — scripts may depend
-  on these.
+- **Default process exit codes and application policy.** `0` success, `1`
+  command failure (`context.fail`), `2` CLI misuse, `3` command not found, and
+  `141` broken pipe. Applications can configure the first three failure
+  categories and map domain errors; scripts must use their app's documented
+  statuses. Unexpected and other I/O failures default to `1`.
 - **The `build.zig` integration API.** The `zcli.generate()` and
   `addCommandTests()` signatures and their typed config structs;
   `zcli.builtin(...)`; `zcli.config(...)`; `zcli.option(...)`.
 - **Plugin hook signatures.** `plugin_id`, `ContextData`, `global_options`,
-  `handleGlobalOption`, `preExecute`, `onError`, and the plugin-command
+  `CommandConfig`, `handleGlobalOption`, `handleInformation`, `loadConfig`,
+  `prepare`, `onFinish`, `describeFailure`, `renderFailure`, and the plugin-command
   convention — the contract a third-party plugin is written against.
 - **Package names and the public module surface.** The post-rename package set
   (`core`, `prompts`, `progress`, `theme`, `markdown`, `terminal`, `vterm`,
@@ -115,17 +118,14 @@ these are final.
 
 1.0 is a *stability* declaration, not a feature gate, so the bar for an item here
 is "shipping this after 1.0 would be a breaking change or an integrity gap we'd
-regret freezing around." **1.0 is deliberately not scheduled.** 0.20 shipped
-2026-07-15; the freeze happens some releases after that, once the surfaces in
-§2 have stopped moving on their own.
+regret freezing around." **1.0 is deliberately not scheduled.** The freeze follows
+validation of the documented contracts, once the surfaces in §2 have settled.
 
 **Blockers (in order):**
 
-- **Let 0.20 settle.** The progress/prompts instance-API rebuild (ADR-0014) and
-  the `zcli.ui` engine were the last *known* breaking changes to the surfaces
-  §2 freezes. They shipped as v0.20.0 (2026-07-15) and are adopted by the
-  examples and the meta-CLI; they still need at least one released minor of
-  real use before any freeze.
+- **Let the CLI-experience contracts settle.** Validate the invocation and
+  plugin lifecycle, array delimiters, and editor behavior (ADRs 0024 and
+  0036–0040) before freezing §2.
 - **A final API sweep of the freeze list in §2.** One pass to rename/remove
   anything awkward *while it's still free* — the project's stated preference is
   "never prioritize backwards compatibility pre-1.0; make the cleanest choice."
@@ -168,7 +168,7 @@ lockstep.
 **Post-1.0:** Standard semver. Breaking changes to the frozen surfaces in §2
 require a major bump. Additive changes (new widgets, new plugins, new theme
 tokens, new `meta` keys) are minor. Fixes are patch. Every release keeps the
-CHANGELOG's per-entry migration notes.
+CHANGELOG's per-entry API notes.
 
 **Zig-version coupling** — this is the one place a dependency's instability can
 reach through a "stable" zcli, so it gets an explicit rule:
@@ -195,8 +195,8 @@ reach through a "stable" zcli, so it gets an explicit rule:
 
 ## 5. How to bet on zcli today
 
-You can build on zcli now. The core contract has been stable across releases and
-the remaining churn is scoped (§3). To insulate yourself pre-1.0:
+You can build on zcli now, with the pre-1.0 API work described in §3.
+To insulate yourself:
 
 - **Pin a release tag** with its immutable hash — never track `main` in a project
   you ship:
@@ -206,20 +206,11 @@ the remaining churn is scoped (§3). To insulate yourself pre-1.0:
   (`main`'s hash changes every commit; that's for trying the development branch,
   not depending on it.)
 - **Read the CHANGELOG entry before every upgrade.** Breaking changes pre-1.0 are
-  always listed there with migration notes, and only ever in minor/major bumps —
+  always listed there with API notes, and only ever in minor/major bumps —
   patch upgrades are always safe.
-- **Expected migration effort per minor, pre-1.0:** small and mechanical. The
-  recent breaks are representative — a package rename (search-and-replace), an
-  instance-API shift (`context.progress()` instead of a free function), a renamed
-  method (`setText` → `setMessage`). The 0.20 block (§3) was the same
-  character. None have been architectural rewrites of your command files; the
-  `meta`/`Args`/`Options`/`execute` shape has held throughout.
-- **The meta-CLI helps you migrate.** `zcli guide` is version-matched to your
-  pinned release, and `zcli dev`/`tree` surface breakage fast on upgrade.
 
 If you need a hard source-stability guarantee *today*, wait for 1.0 —
-that's precisely the line this document exists to draw. If you can absorb a small,
-well-documented migration once per minor, the core is ready to build on now.
+that's precisely the line this document exists to draw. The documented APIs remain subject to change before that freeze.
 
 ---
 

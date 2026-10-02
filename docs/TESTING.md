@@ -8,7 +8,7 @@ zcli provides three tiers of testing — use them together for coverage without 
 | Tier | What it tests | Speed |
 |------|--------------|-------|
 | **Unit** | Command and shared-module logic in isolation — in-process, no binary | Fast |
-| **Integration** | The full CLI binary via subprocess — arg parsing, routing, output | Medium |
+| **Integration** | Full lifecycle via `runInvocation`, plus subprocess tests of the process boundary | Fast–medium |
 | **E2E** | Interactive terminal behavior — prompts, signals, TTY output | Slow |
 
 Unit tests run against a real virtual terminal (`vterm`) that parses ANSI output, so you assert on colors and formatting, not raw escape codes:
@@ -57,6 +57,25 @@ Give any command that prompts an explicit `.stdin`.
 Raw-mode keystrokes (arrows through a `select`, hidden input, Ctrl-C) are not
 modeled by a byte stream and belong in the PTY-backed E2E tier.
 
+For the complete argv-to-outcome lifecycle without a subprocess, the same
+in-process module also exports `runInvocation`:
+
+```zig
+var result = try testing.runInvocation(@import("command_registry"), .{
+    .argv = &.{ "log", "card-7", "--body", "-" },
+    .stdin = "hello\n",
+});
+defer result.deinit();
+try std.testing.expectEqual(@as(u8, 0), result.invocation.status);
+```
+
+Wire the real generated registry into this test module, not the isolated command
+test stub. A compiled registry type works as well. Arguments exclude the binary
+name; omitted stdin is EOF and omitted environment is empty. The result captures
+stdout/stderr and owns the invocation outcome and diagnostics until `deinit()`.
+This exercises production parsing, plugins, resolution, and failure policy;
+`runCommand` remains a direct test of typed command inputs.
+
 Unit tests only run under `zig build test` if `build.zig` wires
 `zcli.addCommandTests(b, exe, zcli_dep, .{ .commands_dir = "src/commands", ... })` —
 a scaffolded project (`zcli init`) already does this. That one step compiles
@@ -92,3 +111,18 @@ test "fetchWidget sends the token" {
 ```
 
 For the full VTerm assertion API, the integration/E2E tiers, snapshot testing, the `HttpFixture` reference, and the recommended per-command strategy, see **[zcli.sh/testing](https://zcli.sh/testing/)**.
+
+The generated-registry process fixture runs with `zig build test-invocation-policy`
+(requires Python 3). It checks configured statuses, mapped failures, original
+unreported unexpected-error traces, and real output failures at the process boundary.
+
+`Prompts.edit` explicitly acquires a controlling terminal; captured stdout in
+`runCommand` or `runInvocation` does not replace that terminal. Test direct editor
+interaction in the PTY tier. For a deterministic noninteractive child fixture,
+supply explicit editor argv and `.attachment = .inherit`. The invitation prompt
+(`Prompts.editor`) still respects captured/noninteractive streams.
+
+`zig build test-metadata-validation` (Python 3) compiles a generated application
+with valid metadata, then checks rejection diagnostics for unknown plugin
+namespaces/fields, incorrect values, missing defaults, invalid stdin/delimiter
+option declarations, and unknown command/option metadata fields.

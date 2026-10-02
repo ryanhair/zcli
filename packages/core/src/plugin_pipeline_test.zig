@@ -9,9 +9,10 @@
 //!   2. handleGlobalOption(ctx, n, v)  -> per matched global option
 //!   3. transformArgs(ctx, args)       -> rewrite/halt before routing
 //!   4. postParse(ctx, parsed)         -> rewrite parsed args
-//!   5. preExecute(ctx, parsed)        -> rewrite, or cancel (return null)
-//!   6. <command>.execute(...)         -> onError(ctx, err) on failure
-//!   7. postExecute(ctx, success)
+//!   5. informational handling, parsing, configuration, validation
+//!   6. prepare(ctx)                -> operational preparation
+//!   7. <command>.execute(...)
+//!   8. onFinish(ctx, success), then describe/render any failure
 //! Plugins run highest-`priority` first.
 
 const std = @import("std");
@@ -77,6 +78,8 @@ const Captured = struct {
     stdout: []const u8,
     stderr: []const u8,
     err: ?anyerror,
+    status: u8,
+    secondary_count: usize,
 
     fn deinit(self: Captured, allocator: std.mem.Allocator) void {
         allocator.free(self.stdout);
@@ -96,15 +99,19 @@ fn runCapture(comptime App: type, argv: []const []const u8) !Captured {
     stdio.stdout_override = &out_aw.writer;
     stdio.stderr_override = &err_aw.writer;
 
-    const maybe_err: ?anyerror = blk: {
-        app.executeWithStdio(testing.allocator, std.testing.io, &environ, argv, &stdio) catch |e| break :blk e;
-        break :blk null;
+    var result = try app.invokeWithStdio(testing.allocator, std.testing.io, &environ, argv, &stdio);
+    defer result.deinit();
+    const maybe_err: ?anyerror = switch (result.outcome) {
+        .failure => |failure| failure.cause,
+        else => null,
     };
 
     return .{
         .stdout = try testing.allocator.dupe(u8, out_aw.written()),
         .stderr = try testing.allocator.dupe(u8, err_aw.written()),
         .err = maybe_err,
+        .status = result.status,
+        .secondary_count = result.secondary_errors.len,
     };
 }
 
@@ -186,16 +193,15 @@ const FullHookPlugin = struct {
         Trace.record("postParse");
         return parsed;
     }
-    pub fn preExecute(_: anytype, parsed: zcli.ParsedArgs) !?zcli.ParsedArgs {
-        Trace.record("preExecute");
-        return parsed;
+    pub fn prepare(_: anytype) !void {
+        Trace.record("prepare");
     }
-    pub fn postExecute(_: anytype, success: bool) !void {
+    pub fn onFinish(_: anytype, success: bool) !void {
         _ = success;
-        Trace.record("postExecute");
+        Trace.record("onFinish");
     }
-    pub fn onError(_: anytype, _: anyerror) !bool {
-        Trace.record("onError");
+    pub fn renderFailure(_: anytype, _: zcli.Failure) !bool {
+        Trace.record("renderFailure");
         return false;
     }
 };
@@ -211,14 +217,14 @@ test "pipeline: all hooks fire in order for a successful command" {
     try run(App, &.{ "--trace", "greet" });
 
     try testing.expect(Greet.executed);
-    // onError must NOT appear — the command succeeded.
+    // renderFailure must NOT appear — the command succeeded.
     try Trace.expectOrder(&.{
         "preParse",
         "handleGlobalOption",
         "transformArgs",
         "postParse",
-        "preExecute",
-        "postExecute",
+        "prepare",
+        "onFinish",
     });
 }
 
@@ -229,9 +235,8 @@ test "pipeline: all hooks fire in order for a successful command" {
 fn OrderPlugin(comptime tag: []const u8, comptime prio: i32) type {
     return struct {
         pub const priority = prio;
-        pub fn preExecute(_: anytype, parsed: zcli.ParsedArgs) !?zcli.ParsedArgs {
+        pub fn prepare(_: anytype) !void {
             Trace.record(tag);
-            return parsed;
         }
     };
 }
@@ -297,17 +302,16 @@ test "pipeline: transformArgs halt prevents command execution" {
 }
 
 // ---------------------------------------------------------------------------
-// 5. preExecute returning null cancels execution
+// 5. Informational completion skips command execution
 // ---------------------------------------------------------------------------
 
 const CancelPlugin = struct {
-    pub fn preExecute(_: anytype, parsed: zcli.ParsedArgs) !?zcli.ParsedArgs {
-        _ = parsed;
-        return null; // cancel
+    pub fn handleInformation(_: anytype) !zcli.InvocationAction {
+        return .complete;
     }
 };
 
-test "pipeline: preExecute returning null cancels the command" {
+test "pipeline: informational completion skips the command" {
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
         .registerPlugin(CancelPlugin)
@@ -450,50 +454,51 @@ test "pipeline: postParse can rewrite the args the command receives" {
 }
 
 // ---------------------------------------------------------------------------
-// 8. onError on a command failure is symmetric with the CommandNotFound path:
-//    returning true suppresses the error; returning false lets it propagate.
+// 8. Rendering and propagation are independent: both renderer results keep failure status.
 // ---------------------------------------------------------------------------
 
-const SuppressErrPlugin = struct {
+const RenderErrPlugin = struct {
     var seen: ?anyerror = null;
     var post_success: ?bool = null;
-    pub fn onError(_: anytype, err: anyerror) !bool {
+    pub fn renderFailure(_: anytype, failure: zcli.Failure) !bool {
+        const err = failure.cause;
         seen = err;
-        return true; // handle it -> suppressed
+        return true; // rendered; failure still propagates
     }
-    pub fn postExecute(_: anytype, success: bool) !void {
+    pub fn onFinish(_: anytype, success: bool) !void {
         post_success = success;
     }
 };
 
-test "pipeline: onError returning true suppresses a command-execution error" {
+test "pipeline: renderFailure returning true preserves a command-execution error" {
     const App = zcli.Registry.init(test_config)
         .register("fail", Fail)
-        .registerPlugin(SuppressErrPlugin)
+        .registerPlugin(RenderErrPlugin)
         .build();
 
-    SuppressErrPlugin.seen = null;
-    SuppressErrPlugin.post_success = null;
-    // Handled -> the error does NOT propagate (symmetric with CommandNotFound).
-    try run(App, &.{"fail"});
-    try testing.expectEqual(@as(?anyerror, error.Boom), SuppressErrPlugin.seen);
-    // ...and execution falls through to postExecute, told the command failed.
-    try testing.expectEqual(@as(?bool, false), SuppressErrPlugin.post_success);
+    RenderErrPlugin.seen = null;
+    RenderErrPlugin.post_success = null;
+    // Rendering changes presentation, never the failure outcome.
+    try testing.expectError(error.Boom, run(App, &.{"fail"}));
+    try testing.expectEqual(@as(?anyerror, error.Boom), RenderErrPlugin.seen);
+    // ...and execution falls through to onFinish, told the command failed.
+    try testing.expectEqual(@as(?bool, false), RenderErrPlugin.post_success);
 }
 
 const PassThroughErrPlugin = struct {
     var seen: ?anyerror = null;
     var post_success: ?bool = null;
-    pub fn onError(_: anytype, err: anyerror) !bool {
+    pub fn renderFailure(_: anytype, failure: zcli.Failure) !bool {
+        const err = failure.cause;
         seen = err;
         return false; // observe only -> error still propagates
     }
-    pub fn postExecute(_: anytype, success: bool) !void {
+    pub fn onFinish(_: anytype, success: bool) !void {
         post_success = success;
     }
 };
 
-test "pipeline: onError returning false lets a command error propagate" {
+test "pipeline: renderFailure returning false lets a command error propagate" {
     const App = zcli.Registry.init(test_config)
         .register("fail", Fail)
         .registerPlugin(PassThroughErrPlugin)
@@ -503,18 +508,19 @@ test "pipeline: onError returning false lets a command error propagate" {
     PassThroughErrPlugin.post_success = null;
     try testing.expectError(error.Boom, run(App, &.{"fail"}));
     try testing.expectEqual(@as(?anyerror, error.Boom), PassThroughErrPlugin.seen);
-    // postExecute still runs on the unhandled-error path (#389) — plugin
+    // onFinish still runs on the unhandled-error path (#389) — plugin
     // teardown must not depend on the command succeeding.
     try testing.expectEqual(@as(?bool, false), PassThroughErrPlugin.post_success);
 }
 
 // ---------------------------------------------------------------------------
-// 9. onError CAN suppress CommandNotFound (the help-plugin path)
+// 9. A renderer can replace output, but cannot suppress CommandNotFound.
 // ---------------------------------------------------------------------------
 
 const NotFoundPlugin = struct {
     var handled = false;
-    pub fn onError(_: anytype, err: anyerror) !bool {
+    pub fn renderFailure(_: anytype, failure: zcli.Failure) !bool {
+        const err = failure.cause;
         if (err == error.CommandNotFound) {
             handled = true;
             return true;
@@ -523,17 +529,17 @@ const NotFoundPlugin = struct {
     }
 };
 
-const ThrowingOnError = struct {
+const ThrowingRenderer = struct {
     pub const priority = 200; // runs before any handler
-    pub fn onError(_: anytype, _: anyerror) !bool {
+    pub fn renderFailure(_: anytype, _: zcli.Failure) !bool {
         return error.HookBoom;
     }
 };
 
-test "pipeline: a failing onError hook does not swallow the original error (#390)" {
+test "pipeline: a failing renderFailure hook does not swallow the original error (#390)" {
     const App = zcli.Registry.init(test_config)
         .register("fail", Fail)
-        .registerPlugin(ThrowingOnError)
+        .registerPlugin(ThrowingRenderer)
         .build();
 
     const cap = try runCapture(App, &.{"fail"});
@@ -542,74 +548,67 @@ test "pipeline: a failing onError hook does not swallow the original error (#390
     // The command's own error propagates — not the hook's.
     try testing.expectEqual(@as(?anyerror, error.Boom), cap.err);
     // The hook's failure is surfaced, not silently dropped.
-    try testing.expect(contains(cap.stderr, "onError hook failed with HookBoom"));
+    try testing.expectEqual(@as(usize, 1), cap.secondary_count);
 }
 
-test "pipeline: a failing onError hook falls through to the next handler (#390)" {
+test "pipeline: a failing renderFailure hook falls through to the next handler (#390)" {
     const App = zcli.Registry.init(test_config)
         .register("fail", Fail)
-        .registerPlugin(ThrowingOnError)
-        .registerPlugin(SuppressErrPlugin)
+        .registerPlugin(ThrowingRenderer)
+        .registerPlugin(RenderErrPlugin)
         .build();
 
-    SuppressErrPlugin.seen = null;
+    RenderErrPlugin.seen = null;
     const cap = try runCapture(App, &.{"fail"});
     defer cap.deinit(testing.allocator);
 
-    // The lower-priority handler still sees and suppresses the original error.
-    try testing.expectEqual(@as(?anyerror, null), cap.err);
-    try testing.expectEqual(@as(?anyerror, error.Boom), SuppressErrPlugin.seen);
+    // The lower-priority renderer still sees the original failure.
+    try testing.expectEqual(@as(?anyerror, error.Boom), cap.err);
+    try testing.expectEqual(@as(?anyerror, error.Boom), RenderErrPlugin.seen);
 }
 
-// The global-option parse-error path must dispatch onError through the same
-// catch-warn-continue machinery as every other error site — a bare
-// `try Plugin.onError` there would let a hook error shadow the original global
-// parse diagnostic and skip later hooks (#512, the #390 regression at a
-// different layer). `--verbose=x` is a boolean-with-value error raised inside
-// parseGlobalOptions before any command routing.
-test "pipeline: a failing onError hook at the global-option layer does not swallow the parse error (#512)" {
+// Output policy cannot depend on partially parsed global state.
+test "pipeline: malformed globals use default rendering before global handlers" {
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
         .registerPlugin(GlobalOptPlugin)
-        .registerPlugin(ThrowingOnError)
-        .registerPlugin(SuppressErrPlugin)
+        .registerPlugin(ThrowingRenderer)
+        .registerPlugin(RenderErrPlugin)
         .build();
 
-    SuppressErrPlugin.seen = null;
+    RenderErrPlugin.seen = null;
     const cap = try runCapture(App, &.{ "--verbose=x", "greet" });
     defer cap.deinit(testing.allocator);
-
-    // The throwing hook ran first and its failure was surfaced, not dropped.
-    try testing.expect(contains(cap.stderr, "onError hook failed with HookBoom"));
-    // The lower-priority handler still saw the ORIGINAL global parse error
-    // (not the hook's HookBoom) and suppressed it.
-    try testing.expectEqual(@as(?anyerror, null), cap.err);
-    try testing.expectEqual(@as(?anyerror, error.OptionBooleanWithValue), SuppressErrPlugin.seen);
+    try testing.expectEqual(@as(?anyerror, error.OptionBooleanWithValue), cap.err);
+    try testing.expectEqual(@as(u8, 2), cap.status);
+    try testing.expectEqual(@as(usize, 0), cap.secondary_count);
+    try testing.expect(RenderErrPlugin.seen == null);
+    try testing.expect(cap.stderr.len > 0);
 }
 
-test "pipeline: onError returning true suppresses CommandNotFound" {
+test "pipeline: renderFailure returning true preserves CommandNotFound" {
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
         .registerPlugin(NotFoundPlugin)
         .build();
 
     NotFoundPlugin.handled = false;
-    try run(App, &.{"does-not-exist"}); // unknown command -> handled, no error
+    try testing.expectError(error.CommandNotFound, run(App, &.{"does-not-exist"}));
     try testing.expect(NotFoundPlugin.handled);
 }
 
 // ---------------------------------------------------------------------------
-// 10. postExecute is told whether the command succeeded
+// 10. onFinish is told whether the command succeeded
 // ---------------------------------------------------------------------------
 
 const PostExecPlugin = struct {
     var success_seen: ?bool = null;
-    pub fn postExecute(_: anytype, success: bool) !void {
+    pub fn onFinish(_: anytype, success: bool) !void {
         success_seen = success;
     }
 };
 
-test "pipeline: postExecute receives success=true after a successful command" {
+test "pipeline: onFinish receives success=true after a successful command" {
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
         .registerPlugin(PostExecPlugin)
@@ -671,7 +670,7 @@ test "pipeline parity: a plugin command runs the identical hook sequence as a re
         .registerPlugin(PluginCmdProvider)
         .build();
 
-    const expected: []const []const u8 = &.{ "preParse", "transformArgs", "postParse", "preExecute", "postExecute" };
+    const expected: []const []const u8 = &.{ "preParse", "transformArgs", "postParse", "prepare", "onFinish" };
 
     Trace.reset();
     Greet.executed = false;
@@ -686,17 +685,17 @@ test "pipeline parity: a plugin command runs the identical hook sequence as a re
     try Trace.expectOrder(expected);
 }
 
-test "pipeline parity: a failing plugin command gets onError suppression and postExecute(success=false)" {
+test "pipeline parity: a failing plugin command gets rendering and onFinish(success=false)" {
     const App = zcli.Registry.init(test_config)
-        .registerPlugin(SuppressErrPlugin)
+        .registerPlugin(RenderErrPlugin)
         .registerPlugin(PluginCmdProvider)
         .build();
 
-    SuppressErrPlugin.seen = null;
-    SuppressErrPlugin.post_success = null;
-    try run(App, &.{"pfail"}); // handled -> no propagation, same as a regular command
-    try testing.expectEqual(@as(?anyerror, error.Boom), SuppressErrPlugin.seen);
-    try testing.expectEqual(@as(?bool, false), SuppressErrPlugin.post_success);
+    RenderErrPlugin.seen = null;
+    RenderErrPlugin.post_success = null;
+    try testing.expectError(error.Boom, run(App, &.{"pfail"}));
+    try testing.expectEqual(@as(?anyerror, error.Boom), RenderErrPlugin.seen);
+    try testing.expectEqual(@as(?bool, false), RenderErrPlugin.post_success);
 }
 
 test "pipeline parity: nested plugin commands route longest-match first" {
@@ -718,16 +717,15 @@ const MetaGroup = struct {
     pub const meta = .{ .description = "group without execute" };
 };
 
-/// Low-priority error sink so handled-error flows stay silent and error-free
-/// while a recorder plugin observes the sequence.
+/// Low-priority renderer keeps output silent while a recorder observes the sequence.
 const HandleAllPlugin = struct {
     pub const priority = 1;
-    pub fn onError(_: anytype, _: anyerror) !bool {
+    pub fn renderFailure(_: anytype, _: zcli.Failure) !bool {
         return true;
     }
 };
 
-test "pipeline parity: metadata-only groups run hooks then onError, from either origin" {
+test "pipeline parity: metadata-only groups run hooks then renderFailure, from either origin" {
     const App = zcli.Registry.init(test_config)
         .register("mgroup", MetaGroup)
         .registerPlugin(FullHookPlugin)
@@ -735,25 +733,23 @@ test "pipeline parity: metadata-only groups run hooks then onError, from either 
         .registerPlugin(PluginCmdProvider)
         .build();
 
-    // Hooks run first; then the group routes through onError (handled here),
-    // and postExecute must NOT fire — nothing executed.
-    const expected: []const []const u8 = &.{ "preParse", "transformArgs", "postParse", "preExecute", "onError" };
+    // A group has no preparation or command body. Completion still runs before rendering.
+    const expected: []const []const u8 = &.{ "preParse", "transformArgs", "postParse", "onFinish", "renderFailure" };
 
     Trace.reset();
-    try run(App, &.{"mgroup"}); // regular registered group
+    try testing.expectError(error.CommandNotFound, run(App, &.{"mgroup"}));
     try Trace.expectOrder(expected);
 
     Trace.reset();
-    try run(App, &.{"remote"}); // plugin command group (nested namespace)
+    try testing.expectError(error.CommandNotFound, run(App, &.{"remote"}));
     try Trace.expectOrder(expected);
 }
 
 // ---------------------------------------------------------------------------
-// 13. A parse error runs onError (with the pipeline intact behind it) and
-//     skips postExecute.
+// 13. A parse error skips operational preparation, runs completion, and is rendered.
 // ---------------------------------------------------------------------------
 
-test "pipeline: parse errors reach onError and skip postExecute" {
+test "pipeline: parse errors skip preparation and still run completion before rendering" {
     const App = zcli.Registry.init(test_config)
         .register("echo", Echo)
         .registerPlugin(FullHookPlugin)
@@ -761,25 +757,25 @@ test "pipeline: parse errors reach onError and skip postExecute" {
         .build();
 
     Trace.reset();
-    try run(App, &.{"echo"}); // missing required positional; handled -> no error
-    try Trace.expectOrder(&.{ "preParse", "transformArgs", "postParse", "preExecute", "onError" });
+    try testing.expectError(error.ArgumentMissingRequired, run(App, &.{"echo"}));
+    try Trace.expectOrder(&.{ "preParse", "transformArgs", "postParse", "onFinish", "renderFailure" });
 }
 
 // ---------------------------------------------------------------------------
-// 14. onError dispatch is first-handler-wins in priority order
+// 14. renderFailure dispatch is first-handler-wins in priority order
 // ---------------------------------------------------------------------------
 
 fn ErrOrderPlugin(comptime tag: []const u8, comptime prio: i32, comptime handles: bool) type {
     return struct {
         pub const priority = prio;
-        pub fn onError(_: anytype, _: anyerror) !bool {
+        pub fn renderFailure(_: anytype, _: zcli.Failure) !bool {
             Trace.record(tag);
             return handles;
         }
     };
 }
 
-test "pipeline: the first handling plugin stops onError dispatch" {
+test "pipeline: the first handling plugin stops renderFailure dispatch" {
     const App = zcli.Registry.init(test_config)
         .register("fail", Fail)
         .registerPlugin(ErrOrderPlugin("err-low", 1, true))
@@ -787,12 +783,12 @@ test "pipeline: the first handling plugin stops onError dispatch" {
         .build();
 
     Trace.reset();
-    try run(App, &.{"fail"});
-    // High handles it; low is never consulted.
+    try testing.expectError(error.Boom, run(App, &.{"fail"}));
+    // High renders it; low is never consulted.
     try Trace.expectOrder(&.{"err-high"});
 }
 
-test "pipeline: a non-handling plugin passes onError down the priority chain" {
+test "pipeline: a non-handling plugin passes renderFailure down the priority chain" {
     const App = zcli.Registry.init(test_config)
         .register("fail", Fail)
         .registerPlugin(ErrOrderPlugin("obs-high", 100, false))
@@ -800,7 +796,7 @@ test "pipeline: a non-handling plugin passes onError down the priority chain" {
         .build();
 
     Trace.reset();
-    try run(App, &.{"fail"});
+    try testing.expectError(error.Boom, run(App, &.{"fail"}));
     try Trace.expectOrder(&.{ "obs-high", "sink-low" });
 }
 
@@ -820,9 +816,8 @@ const StatefulPlugin = struct {
         final_count = data.count;
     }
 
-    pub fn preExecute(context: anytype, parsed: zcli.ParsedArgs) !?zcli.ParsedArgs {
+    pub fn prepare(context: anytype) !void {
         context.plugins.stateful.count += 1;
-        return parsed;
     }
 };
 
@@ -847,10 +842,54 @@ test "pipeline: ContextData flows default -> hook mutation -> command -> deinit"
     ReadState.seen = null;
     try run(App, &.{"state"});
 
-    // Default 0, +1 in preExecute, observed by the command...
+    // Default 0, +1 in prepare, observed by the command...
     try testing.expectEqual(@as(?u32, 1), ReadState.seen);
     // ...whose own mutation is what deinitContextData receives at teardown.
     try testing.expectEqual(@as(?u32, 11), StatefulPlugin.final_count);
+}
+
+const CommandPolicyPlugin = struct {
+    pub const plugin_id = "policy";
+    pub const CommandConfig = struct { needs_daemon: bool = true };
+    var seen: ?bool = null;
+
+    pub fn prepare(context: anytype) !void {
+        seen = context.command_config.policy.needs_daemon;
+    }
+};
+
+const ConfiguredCommand = struct {
+    pub const meta = .{
+        .description = "No daemon needed",
+        .aliases = &.{"offline"},
+        .plugins = .{ .policy = .{ .needs_daemon = false } },
+    };
+    pub const Args = struct {};
+    pub const Options = struct {};
+    pub fn execute(_: Args, _: Options, _: anytype) !void {}
+};
+
+const DefaultConfigCommand = struct {
+    pub const meta = .{ .description = "Uses default plugin command config" };
+    pub const Args = struct {};
+    pub const Options = struct {};
+    pub fn execute(_: Args, _: Options, _: anytype) !void {}
+};
+
+test "plugin CommandConfig reaches prepare hook for canonical path, alias, and default" {
+    const App = zcli.Registry.init(test_config)
+        .register("configured", ConfiguredCommand)
+        .register("default", DefaultConfigCommand)
+        .registerPlugin(CommandPolicyPlugin)
+        .build();
+    for ([_][]const u8{ "configured", "offline" }) |name| {
+        CommandPolicyPlugin.seen = null;
+        try run(App, &.{name});
+        try testing.expectEqual(@as(?bool, false), CommandPolicyPlugin.seen);
+    }
+    CommandPolicyPlugin.seen = null;
+    try run(App, &.{"default"});
+    try testing.expectEqual(@as(?bool, true), CommandPolicyPlugin.seen);
 }
 
 // ---------------------------------------------------------------------------
@@ -947,7 +986,7 @@ test "version: --version prints '<name> v<version>' and skips the command" {
     defer cap.deinit(testing.allocator);
 
     try testing.expect(cap.err == null);
-    try testing.expect(!Greet.executed); // preExecute cancels before the command runs
+    try testing.expect(!Greet.executed); // informational completion skips the command
     try testing.expectEqualStrings("test v1.0.0\n", cap.stdout);
 }
 
@@ -980,7 +1019,7 @@ test "version: --version with a valid command still shows the version" {
     try testing.expect(contains(cap.stdout, "test v1.0.0"));
 }
 
-test "version: --version on a bogus command shows the version via onError (regression: was 'command not found')" {
+test "version: --version on a bogus command completes with the version (regression: was 'command not found')" {
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
         .registerPlugin(Version)
@@ -989,8 +1028,7 @@ test "version: --version on a bogus command shows the version via onError (regre
     const cap = try runCapture(App, &.{ "--version", "does-not-exist" });
     defer cap.deinit(testing.allocator);
 
-    // onError caught CommandNotFound, printed the version, and suppressed the
-    // error — the user gets what they asked for, not a not-found message.
+    // Information handling completes successfully before reporting a routing failure.
     try testing.expect(cap.err == null);
     try testing.expect(contains(cap.stdout, "test v1.0.0"));
     try testing.expect(!contains(cap.stderr, "Unknown command"));
@@ -999,7 +1037,7 @@ test "version: --version on a bogus command shows the version via onError (regre
 test "version: --version on a known command group beats group help (#403)" {
     const Help = @import("plugins/zcli_help/plugin.zig");
     // A PURE group ("users" has subcommands but no module of its own) routes
-    // through the raw not-found path, where help's onError renders group help
+    // through the raw not-found path, where help's renderFailure renders group help
     // at priority 100 — `--version users` used to lose that race and be
     // silently ignored. Help now defers to the pending version request.
     const App = zcli.Registry.init(test_config)
@@ -1017,32 +1055,28 @@ test "version: --version on a known command group beats group help (#403)" {
     try testing.expect(!contains(cap.stderr, "list")); // no group help rendered
 }
 
-test "version: declares priority 90 so a higher-priority plugin's preExecute wins" {
-    // The priority mechanism orders EVERY dispatched hook highest-first (see the
-    // "descending priority order" test above). Version sits at 90 so that when
-    // help (priority 100, added on help's own branch) also fires for
-    // `--help --version`, help's preExecute cancels first and the version line
-    // never prints. We can't register the real Help here (its priority isn't 100
-    // on this branch), so assert the value directly and prove the ordering with
-    // a stand-in higher-priority cancel plugin.
+test "version: information priority is respected and even higher priority preparation is skipped" {
+    const ObserveInformation = struct {
+        pub const priority = 100;
+        pub fn handleInformation(_: anytype) !zcli.InvocationAction {
+            Trace.record("information");
+            return .proceed;
+        }
+    };
     try testing.expectEqual(@as(i32, 90), Version.priority);
-
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
         .registerPlugin(Version)
-        .registerPlugin(OrderPlugin("cancel", 100)) // a 100-priority preExecute
+        .registerPlugin(ObserveInformation)
+        .registerPlugin(OrderPlugin("prepare", 200))
         .build();
 
-    // OrderPlugin records but returns the args unchanged, so version still runs;
-    // the point is the *order*: the 100-priority hook is consulted before
-    // version's 90-priority preExecute.
     Trace.reset();
     const cap = try runCapture(App, &.{ "--version", "greet" });
     defer cap.deinit(testing.allocator);
     try testing.expect(cap.err == null);
-    // The 100-priority plugin ran (its preExecute fired before version's).
-    try testing.expect(Trace.len >= 1);
-    try testing.expectEqualStrings("cancel", Trace.events[0]);
+    try testing.expectEqualStrings("test v1.0.0\n", cap.stdout);
+    try Trace.expectOrder(&.{"information"});
 }
 
 // ===========================================================================
@@ -1159,7 +1193,7 @@ test "not_found: mistyped subcommand of a no-Args command renders suggestions (#
         .build();
 
     // "init" declares no positionals, so a stray non-option token is a
-    // mistyped subcommand. It must route through onError (rendering the
+    // mistyped subcommand. It must route through renderFailure (rendering the
     // not-found block with the stray token in the attempted path), not
     // silently exit with no output.
     const cap = try runCapture(App, &.{ "init", "foo" });
@@ -1567,4 +1601,49 @@ test "response files: -- passes a literal @value through even when opted in (#76
 
     try testing.expect(r.err == null);
     try testing.expectEqualStrings("@scope/pkg", Echo.last);
+}
+
+test "real information plugins preserve failures for extra group input" {
+    const Help = @import("plugins/zcli_help/plugin.zig");
+    const config = comptime blk: {
+        var cfg = test_config;
+        cfg.exit_codes = .{ .usage = 64, .command_not_found = 65 };
+        break :blk cfg;
+    };
+    const App = zcli.Registry.init(config)
+        .register("group", MetaGroup)
+        .register("group child", Run)
+        .register("pure leaf", Run)
+        .registerPlugin(RemoteProvider)
+        .registerPlugin(Help)
+        .registerPlugin(NotFound)
+        .registerPlugin(Version)
+        .build();
+
+    for ([_][]const u8{ "group", "remote", "pure" }) |group| {
+        const bare = try runCapture(App, &.{group});
+        defer bare.deinit(testing.allocator);
+        try testing.expectEqual(@as(u8, 0), bare.status);
+
+        const typo = try runCapture(App, &.{ group, "missing" });
+        defer typo.deinit(testing.allocator);
+        try testing.expectEqual(@as(u8, 65), typo.status);
+        try testing.expect(typo.err != null);
+        try testing.expect(contains(typo.stderr, "missing"));
+
+        const invalid = try runCapture(App, &.{ group, "--bogus" });
+        defer invalid.deinit(testing.allocator);
+        try testing.expectEqual(@as(u8, 64), invalid.status);
+        try testing.expect(contains(invalid.stderr, "Unknown option"));
+
+        const help = try runCapture(App, &.{ group, "--help" });
+        defer help.deinit(testing.allocator);
+        try testing.expectEqual(@as(u8, 0), help.status);
+        try testing.expect(help.stdout.len > 0);
+
+        const version = try runCapture(App, &.{ group, "missing", "--version" });
+        defer version.deinit(testing.allocator);
+        try testing.expectEqual(@as(u8, 0), version.status);
+        try testing.expectEqualStrings("test v1.0.0\n", version.stdout);
+    }
 }

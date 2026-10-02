@@ -74,8 +74,8 @@ fn validatePort(port: u16) ?[]const u8 {
 
 A validation failure is a bad-*input* error — a sibling of "invalid enum value",
 not a business-logic failure. #206 gives that whole family one uniform treatment
-(`Invalid value 'X' for option '--Y'`, humanized type, usage hint, `onError`
-introspection), and validation is its natural extension.
+(`Invalid value 'X' for option '--Y'`, humanized type, usage hint, structured
+failure introspection through description/rendering hooks under ADR-0036), and validation is its natural extension.
 
 - Returning a bare `error` would surface `@errorName` (camelCase — the un-humane
   output #206 removed) unless we add a mapping layer.

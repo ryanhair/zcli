@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Error handling",
-.description = "How zcli reports errors: structured ZcliError unions, rich diagnostics with did-you-mean suggestions, automatic framework handling inside commands, and the parseCommandLine API for standalone parsing.",
+.description = "How zcli reports failures: structured parsing diagnostics, configurable framework statuses, application error policy, plugin failure hooks, and non-exiting invocation results.",
 .date = @date("2026-07-11"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -211,20 +211,17 @@ The framework automatically:
 
 ### Command errors
 
-Commands can return errors which will be handled by the framework:
+Commands return ordinary Zig errors. Use `context.fail` to attach a useful
+explanation; the framework records the failure, selects its status, and renders
+it after command cleanup. Printing an explanation and returning normally would
+incorrectly report success to the shell.
 
 ```zig
 pub fn execute(args: Args, options: Options, context: *Context) !void {
     const io = context.io;
     const file = std.Io.Dir.cwd().openFile(io, args.filename, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            try context.stderr().print("Error: File '{s}' not found\n", .{args.filename});
-            return;
-        },
-        error.AccessDenied => {
-            try context.stderr().print("Error: Permission denied accessing '{s}'\n", .{args.filename});
-            return;
-        },
+        error.FileNotFound => return context.fail("File '{s}' not found", .{args.filename}),
+        error.AccessDenied => return context.fail("Permission denied accessing '{s}'", .{args.filename}),
         else => return err, // Let framework handle unexpected errors
     };
     defer file.close(io);
@@ -232,6 +229,97 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // Process file...
 }
 ```
+
+### Invocation outcomes
+
+The registry classifies failures where they originate. A command returning an
+error whose name happens to match a parser error does not become a usage failure.
+Failures retain their category, cause, lifecycle stage, origin, and diagnostic.
+An application renderer may print JSON or human text without changing whether
+the invocation failed.
+
+Framework defaults are `2` for invalid input, `3` for unknown commands, and `1`
+for reported application failures. Applications own their numeric exit policy.
+A classified failure keeps its status even if writing the diagnostic fails;
+otherwise a broken downstream pipe exits `141`, and other failed writes remain
+failures even when command execution itself succeeded.
+
+Configure framework statuses in `zcli.generate` without maintaining a list of
+parser error names:
+
+```zig
+const policy = b.createModule(.{
+    .root_source_file = b.path("src/failure_policy.zig"),
+});
+
+const registry = try zcli.generate(b, exe, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .app_name = "myapp",
+    .app_description = "My CLI application",
+    .exit_codes = .{ .usage = 64, .command_not_found = 64 },
+    .failure_policy_module = policy,
+});
+```
+
+The optional policy module receives a `zcli` import and can map command or plugin
+errors using typed rules:
+
+```zig
+const zcli = @import("zcli");
+
+pub const error_codes = [_]zcli.failure.ErrorRule{
+    .{ .cause = error.NotFound, .command = "card show", .code = 2,
+       .id = "card_not_found", .message = "Card not found" },
+    .{ .cause = error.Unauthorized, .plugin = "auth", .code = 10,
+       .message = "Sign in first" },
+};
+```
+
+Command scopes use canonical paths, so aliases share the same rule. A plugin
+scope uses its `plugin_id`. A rule with neither scope applies to both command and
+plugin failures; it never remaps framework usage errors. Zero statuses and
+overlapping rules fail at compile time. A command can attach details with
+`return context.failWith(error.NotFound, "Card '{s}' was not found", .{id});`;
+`context.fail(...)` records a message and returns `error.CommandFailed`.
+
+Use the non-exiting invocation interface when embedding a CLI or testing the
+whole pipeline. Its result owns retained diagnostics until `deinit()`. The normal
+`run()` entry point applies process-exit behavior. Direct command-body tests use
+`runCommand`; argv, plugins, stdin resolution, rendering, and status are covered
+by `runInvocation` through the same engine used in production.
+
+### Setup and cleanup failures
+
+Help and version run before application input loading and operational preparation.
+Configuration supplies values before validation; authentication and service startup
+run afterward. A typo in a flag therefore cannot start a daemon. All fallible
+stages use the same failure path, and rendering a setup failure never permits the
+command to proceed.
+
+Application rendering selected by global options is available after global handling
+completes successfully. Earlier failures use the default renderer. Completion and
+renderer failures cannot replace the original cause or turn a failed invocation
+into success.
+
+Plugins use `describeFailure(context, failure) !?zcli.failure.Description`
+to supply an identity or explanation and `renderFailure(context, failure) !bool`
+to print or decline. An application policy can instead export
+`renderFailure(context, failure, status) !void`; it has precedence over plugins
+and **owns every failure it is called for**. Returning normally claims the
+output even if it wrote nothing. If output selection depends on `--json`, the
+application renderer must render both JSON and human formats itself; a plugin
+renderer can return `false` to request the default human output. Writes through
+context streams are buffered; if a renderer returns an error or declines, its
+buffered bytes are discarded before fallback. Final writes to the destination
+remain ordinary I/O. An unexpected unreported error without a message or identity
+still propagates its Zig trace;
+a custom renderer that reports it suppresses that default trace.
+
+Current limitation: invalid numeric array elements and empty segments in
+explicitly delimited arrays can be logged without a structured diagnostic. The
+invocation engine then treats them as unexpected errors, exiting `1` with a Zig
+trace rather than the configured usage status. This is a known regression; do
+not rely on the usage status for those inputs until it is fixed.
 
 ## Memory management
 
@@ -248,13 +336,15 @@ The framework handles this cleanup automatically for command implementations.
 
 ### Error contexts
 
-Error contexts are lightweight and don't require explicit cleanup.
+Standalone parser diagnostics borrow their input and do not require separate
+cleanup. An owned invocation result retains its diagnostics and must be released
+with `deinit()`; do not keep pointers into it after that call.
 
 ## Best practices
 
 1. **Use specific error handling**: Match on specific error types rather than catching all errors
 2. **Provide helpful messages**: Give users actionable information about what went wrong
-3. **Use appropriate exit codes**:
+3. **Use appropriate exit codes** (or configure them for your application):
    - `0` for success
    - `1` for general errors
    - `2` for usage errors (wrong arguments/options)

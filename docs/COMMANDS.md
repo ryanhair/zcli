@@ -42,7 +42,9 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 
 - **`meta`** — help text and parsing metadata. Top-level fields: `description`,
   `examples`, `aliases`, `hidden`, and `args`/`options` (per-field metadata,
-  below), plus `exclusive` — sets of options where at most one may be supplied
+  below), `plugins` (typed per-command settings declared by registered plugins;
+  see [PLUGINS.md](PLUGINS.md#command-specific-plugin-settings)), plus
+  `exclusive` — sets of options where at most one may be supplied
   (see [DESIGN.md](DESIGN.md) and [ADR-0022](adr/0022-option-constraints.md)).
   Per-field metadata (`meta.args.<field>` / `meta.options.<field>`) accepts
   `description`, a `validate` hook (`fn(T) ?[]const u8`, refining an
@@ -62,7 +64,8 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
   For values that don't map onto a plain scalar
   (`u16`, `enum`, `[]const u8`, …), a field's type can itself declare
   `pub fn parse(s: []const u8) E!@This()` instead of relying on `validate` —
-  see ADR-0025.
+  see ADR-0025. Options also accept `delimiter` (explicit list syntax for an
+  array) and `stdin` (opt-in stdin resolution for scalar text), described below.
 - **`Args`** — positional arguments as a struct; a `[]const []const u8` field is variadic.
 - **`Options`** — `bool`/`?bool` fields are flags; other types take values, with defaults from the initializers.
 - **`execute`** — the command body, receiving the parsed, typed `Args` and `Options` plus the app context.
@@ -70,3 +73,36 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 The parser is generated from these structs at compile time, so option types are checked when parsing and reading a nonexistent field fails to compile.
 
 For the full contract — variadic rules, boolean negation (`--no-flag`) and how it shapes help, typing `context` for editor autocomplete, and runnable command groups — see **[zcli.sh/docs](https://zcli.sh/docs/#commands)**.
+
+## Repeatable options and stdin text
+
+Array options collect one literal element per occurrence. `--ac "a, b" --ac c`
+therefore produces two values: `"a, b"` and `"c"`. Add `.delimiter = ','` when
+an option intentionally supports `--tag a,b`; empty delimited segments are
+rejected. Long and short forms use the same rules. Delimiters do not implement
+CSV quoting, escaping, or whitespace trimming. See [ADR-0024](adr/0024-multi-value-options.md).
+
+```zig
+pub const Options = struct {
+    ac: []const []const u8 = &.{},
+    tags: []const []const u8 = &.{},
+    body: ?[]const u8 = null,
+};
+pub const meta = .{ .options = .{
+    .ac = .{ .description = "Acceptance criterion; repeat for each" },
+    .tags = .{ .delimiter = ',', .short = 't' },
+    .body = .{ .stdin = true },
+} };
+```
+
+Only an explicit final CLI value of `-` for a `.stdin = true` text option reads
+stdin. `--body - --body text` uses `text` without reading; values from config,
+environment, and defaults remain literal. Resolution preserves all bytes,
+including trailing newlines and empty input, before content validation and
+`prepare`. Two requested consumers fail before either reads. The default bound
+is 16 MiB, configurable with `GenerateConfig.stdin_max_bytes`. Help/version do
+not consume the stream. Standalone parsing records the request but performs no
+I/O; test resolution with `runInvocation`. See [ADR-0037](adr/0037-stdin-text-input.md).
+
+For the current invalid-array diagnostic limitation, see
+[Error Handling](ERROR_HANDLING.md#known-array-validation-limitation).

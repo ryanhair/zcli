@@ -13,7 +13,8 @@ const std = @import("std");
 const zcli = @import("zcli.zig");
 const console_utf8 = @import("console_utf8.zig");
 
-/// Field name in `context.plugins` for a plugin's ContextData: its `plugin_id`
+/// Field name in `context.plugins` and `context.command_config` for plugin
+/// data/config: its `plugin_id`
 /// verbatim. `plugin_id` is required to be a valid Zig identifier — enforced at
 /// registration by plugin_types.validatePlugin — so there is nothing to rewrite
 /// here. Plugins with ContextData MUST declare `pub const plugin_id = "unique_name";`
@@ -67,6 +68,33 @@ fn PluginDataType(comptime plugins: []const type) type {
     }
 }
 
+/// Per-command plugin settings are typed only from the registered plugins.
+/// The registry supplies routed command metadata later, avoiding any import
+/// from ContextFor back to the application command tree.
+fn PluginCommandConfigType(comptime plugins: []const type) type {
+    comptime {
+        var field_count: usize = 0;
+        for (plugins) |Plugin| {
+            if (@hasDecl(Plugin, "CommandConfig")) field_count += 1;
+        }
+        var field_names: [field_count][]const u8 = undefined;
+        var field_types: [field_count]type = undefined;
+        var field_attrs: [field_count]std.builtin.Type.StructField.Attributes = undefined;
+        var idx: usize = 0;
+        for (plugins) |Plugin| {
+            if (@hasDecl(Plugin, "CommandConfig")) {
+                const C = Plugin.CommandConfig;
+                const default_value: C = .{};
+                field_names[idx] = pluginFieldName(Plugin);
+                field_types[idx] = C;
+                field_attrs[idx] = .{ .default_value_ptr = @ptrCast(&default_value) };
+                idx += 1;
+            }
+        }
+        return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
+    }
+}
+
 /// Compute the context type for a set of plugins.
 pub fn ContextFor(comptime plugins: []const type) type {
     return struct {
@@ -87,11 +115,26 @@ pub fn ContextFor(comptime plugins: []const type) type {
         // Command execution context
         available_commands: []const []const []const u8 = &.{},
         command_path: []const []const u8 = &.{},
+        /// Registered target path; aliases retain their invoked command_path.
+        canonical_command_path: []const []const u8 = &.{},
+        /// Raw arguments remaining after the routed command path.
+        command_arguments: []const []const u8 = &.{},
 
         /// Structured detail for the most recent parse/routing error, set by
-        /// the framework just before onError hooks run. Payload slices point
+        /// the framework before failure description/rendering. Payload slices point
         /// into argv and comptime type names — valid for the whole execution.
         diagnostic: ?zcli.ZcliDiagnostic = null,
+        failure_category: zcli.failure.Category = .unexpected,
+        failure_stage: zcli.failure.Stage = .initialization,
+        failure_origin: zcli.failure.Origin = .framework,
+        failure_message: ?[]const u8 = null,
+        failure_message_owned: bool = false,
+        failure_id: ?[]const u8 = null,
+        failure_rendered: bool = false,
+        invocation_completed: bool = false,
+        globals_ready: bool = false,
+        secondary_errors: std.ArrayList(anyerror) = .empty,
+
         command_meta: ?zcli.CommandMeta = null,
         command_module_info: ?zcli.CommandModuleInfo = null,
 
@@ -101,6 +144,10 @@ pub fn ContextFor(comptime plugins: []const type) type {
 
         // Type-safe plugin data - each plugin's ContextData is a field
         plugins: PluginDataType(plugins) = .{},
+        /// Typed policy for the routed command, keyed by plugin_id. Fields
+        /// default to each plugin's CommandConfig when a command has no override.
+        command_config: PluginCommandConfigType(plugins) = .{},
+        initialized_plugins: [plugins.len]bool = @splat(false),
 
         /// Console code pages captured by the registry's `run()` when it
         /// switched the Windows console to UTF-8 for this invocation. `exit()`
@@ -142,16 +189,50 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// defaults). Not doing rollback here is what keeps a succeeded plugin's
         /// `deinitContextData` from running twice.
         pub fn initPluginData(self: *Self) !void {
-            inline for (plugins) |Plugin| {
+            inline for (plugins, 0..) |Plugin, index| {
+                self.failure_stage = .initialization;
+                self.failure_origin = .{ .plugin = if (@hasDecl(Plugin, "plugin_id")) Plugin.plugin_id else @typeName(Plugin) };
                 if (@hasDecl(Plugin, "ContextData") and @hasDecl(Plugin, "initContextData")) {
                     const field_name = comptime pluginFieldName(Plugin);
                     try Plugin.initContextData(&@field(self.plugins, field_name), self);
                 }
+                self.initialized_plugins[index] = true;
             }
+        }
+
+        /// Called by the registry after routing, before command hooks run.
+        pub fn setCommandConfig(self: *Self, comptime Module: type) void {
+            inline for (plugins) |Plugin| {
+                if (@hasDecl(Plugin, "CommandConfig")) {
+                    const name = comptime pluginFieldName(Plugin);
+                    var value: Plugin.CommandConfig = .{};
+                    if (@hasDecl(Module, "meta") and
+                        @hasField(@TypeOf(Module.meta), "plugins") and
+                        @hasField(@TypeOf(Module.meta.plugins), name))
+                    {
+                        const supplied = @field(Module.meta.plugins, name);
+                        inline for (@typeInfo(@TypeOf(supplied)).@"struct".fields) |field| {
+                            @field(value, field.name) = @field(supplied, field.name);
+                        }
+                    }
+                    @field(self.command_config, name) = value;
+                }
+            }
+        }
+
+        pub fn pluginInitialized(self: *const Self, comptime Target: type) bool {
+            inline for (plugins, 0..) |Plugin, i| {
+                if (Plugin == Target) return self.initialized_plugins[i];
+            }
+            return false;
         }
 
         /// Clean up context resources
         pub fn deinit(self: *Self) void {
+            if (self.failure_message_owned) {
+                self.allocator.free(self.failure_message.?);
+                self.failure_message_owned = false;
+            }
             // No per-field frees here: everything the framework attaches to the
             // context (command_path, FieldInfo arrays, diagnostics) is allocated
             // from context.allocator — the arena-per-command — and reclaimed
@@ -302,6 +383,23 @@ pub fn ContextFor(comptime plugins: []const type) type {
             return .{ .writer = self.stdout(), .capability = self.theme.capability() };
         }
 
+        /// A one-shot table printer for command results. Terminal output fits
+        /// the available width; redirected or captured stdout keeps full cells.
+        pub fn table(self: *Self) zcli.ui.StaticTable {
+            const width = if (self.stdio.stdout_override == null and self.theme.caps.is_tty)
+                zcli.ui.stdoutWidth()
+            else
+                null;
+            var output_theme = self.theme;
+            if (width == null) output_theme.caps.color_enabled = false;
+            return .{
+                .writer = self.stdout(),
+                .allocator = self.allocator,
+                .theme = output_theme,
+                .width = width,
+            };
+        }
+
         /// A `ui.App` pre-wired to this command's environment: stdout, the
         /// arena-per-command allocator, the detected terminal capability, and
         /// unicode/TTY detection. The entry point for CLI/TUI output —
@@ -418,34 +516,20 @@ pub fn ContextFor(comptime plugins: []const type) type {
             std.process.exit(exitStatus(code, write_err));
         }
 
-        /// Fail the command with a friendly, user-facing message: print `fmt`
-        /// (formatted with `args`) to stderr, then return `error.CommandFailed`.
-        /// zcli reports that as a clean non-zero exit — just your message, no
-        /// `error: CommandFailed` line and no stack trace, in every build mode.
-        ///
-        /// Use it for expected failures a user should see ("no such note"), and
-        /// `return` it directly: `return context.fail("no note: {s}", .{name});`.
-        /// For an *unexpected* failure, return a plain error instead — its name
-        /// and Debug-only trace are what you want while debugging.
+        /// Attach a contextual explanation while preserving an ordinary Zig error.
+        pub fn failWith(self: *Self, err: anyerror, comptime fmt: []const u8, args: anytype) anyerror {
+            _ = @errorName(self.fail(fmt, args));
+            return err;
+        }
+
+        /// Record a failure for the invocation renderer and return CommandFailed.
+        /// Normal Zig defers unwind; no bytes are printed here.
+        /// context.exit() remains an immediate, non-unwinding escape hatch.
         pub fn fail(self: *Self, comptime fmt: []const u8, args: anytype) error{CommandFailed} {
-            // Render first, sanitize on the way out (#734). `args` are routinely
-            // user-controlled — a rejected `--config` path, a version string
-            // echoed back *because* it contained a byte outside [A-Za-z0-9._-],
-            // a set that includes ESC — and printing them raw hands the terminal
-            // an OSC 52 clipboard write or a window-title rewrite. This is the
-            // failure API the framework documents for command authors, so
-            // sanitizing here fixes every downstream CLI at once instead of
-            // asking each author to remember. Same sanitize-the-whole-rendered-
-            // string boundary reportParseError uses: framework prose can't
-            // contain control bytes, so nothing is lost by covering all of it.
-            var rendered = std.Io.Writer.Allocating.init(self.allocator);
-            defer rendered.deinit();
-            // The message is arena-allocated and the arena is this command's;
-            // on OOM the message is dropped rather than printed unsanitized —
-            // falling back to a raw write would reopen the hole this closes.
-            if (rendered.writer.print(fmt ++ "\n", args)) |_| {
-                zcli.writeSanitized(self.stderr(), rendered.written()) catch {};
-            } else |_| {}
+            if (self.failure_message_owned) self.allocator.free(self.failure_message.?);
+            self.failure_message = std.fmt.allocPrint(self.allocator, fmt, args) catch null;
+            self.failure_message_owned = self.failure_message != null;
+            self.failure_category = .application;
             return error.CommandFailed;
         }
     };
@@ -611,48 +695,19 @@ test "exit() restores the terminal, not just the Windows code pages" {
     zcli.ui.guard.restore();
 }
 
-test "fail() sanitizes its rendered message" {
-    // Regression for #734: `fail` is the failure API the framework documents
-    // for command authors, and it printed `args` raw. Those args are routinely
-    // user-controlled — the upgrade plugin echoes back a version string
-    // *because* it contained a byte outside [A-Za-z0-9._-], a set that
-    // includes ESC — so an OSC 52 clipboard write or a window-title rewrite
-    // rode straight through to the operator's terminal.
-    const Ctx = ContextFor(&.{});
+test "fail records an explanation without writing before final rendering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
-    var err_aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    var err_aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer err_aw.deinit();
     stdio.stderr_override = &err_aw.writer;
     const env = std.process.Environ.Map.init(std.testing.allocator);
-
-    var ctx = Ctx{
-        .allocator = std.testing.allocator,
-        .io = std.testing.io,
-        .stdio = &stdio,
-        .environ = &env,
-    };
-
-    // An OSC 52 payload smuggled through a command's own failure message.
-    try std.testing.expectEqual(error.CommandFailed, ctx.fail("invalid version '{s}'", .{"\x1b]52;c;cHduZWQ=\x07"}));
-    const text = err_aw.written();
-    try std.testing.expect(std.mem.indexOfScalar(u8, text, 0x1b) == null);
-    try std.testing.expect(std.mem.indexOfScalar(u8, text, 0x07) == null);
-    // The framework prose and the inert part of the value still read normally,
-    // and the trailing newline `fail` appends survives sanitization.
-    try std.testing.expectEqualStrings("invalid version ']52;c;cHduZWQ='\n", text);
-
-    // UTF-8 multibyte passes through untouched: continuation bytes (0x80-0xBF)
-    // and lead bytes (0xC0+) both fall outside the stripped C0/DEL range.
-    err_aw.clearRetainingCapacity();
-    try std.testing.expectEqual(error.CommandFailed, ctx.fail("no note: {s}", .{"café-日本語-🎉"}));
-    try std.testing.expectEqualStrings("no note: café-日本語-🎉\n", err_aw.written());
-
-    // Tab and newline are the two control bytes worth keeping — a multi-line
-    // failure message must still render as multiple lines.
-    err_aw.clearRetainingCapacity();
-    try std.testing.expectEqual(error.CommandFailed, ctx.fail("a\tb\nc", .{}));
-    try std.testing.expectEqualStrings("a\tb\nc\n", err_aw.written());
+    var ctx = ContextFor(&.{}).init(arena.allocator(), std.testing.io, &stdio, &env);
+    try std.testing.expectEqual(error.CommandFailed, ctx.fail("no note: {s}", .{"café"}));
+    try std.testing.expectEqualStrings("no note: café", ctx.failure_message.?);
+    try std.testing.expectEqual(@as(usize, 0), err_aw.written().len);
 }
 
 test "initPluginData runs declared init hook and mutates ContextData" {

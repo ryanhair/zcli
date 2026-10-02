@@ -28,7 +28,40 @@ const levenshtein = zcli.levenshtein;
 /// higher priority and answers cases 2 and 3 with richer, themed help,
 /// suppressing the error before this plugin is consulted; this plugin then
 /// only reaches case 1. When help is absent, this plugin covers all three.
-pub fn onError(
+pub fn handleInformation(context: anytype) !zcli.InvocationAction {
+    // Only a bare group/no command is informational. Unknown descendants stay
+    // failed, and explicit help/version belongs to their higher-priority hooks.
+    if (context.command_arguments.len != 0) return .proceed;
+    if (context.command_module_info != null and context.command_module_info.?.has_args) return .proceed;
+    if (context.command_path.len == 0) {
+        _ = try renderRoutingError(context, error.CommandNotFound);
+        return .complete;
+    }
+    const info = context.getAvailableCommandInfo();
+    for (info) |command| {
+        if (command.path.len <= context.command_path.len) continue;
+        var matches = true;
+        for (context.command_path, 0..) |part, i| {
+            if (!std.mem.eql(u8, part, command.path[i])) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            _ = try renderRoutingError(context, error.CommandNotFound);
+            return .complete;
+        }
+    }
+    return .proceed;
+}
+
+pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool {
+    if (failure.category != .unknown_command) return false;
+    _ = try renderRoutingError(context, failure.cause);
+    return true;
+}
+
+fn renderRoutingError(
     context: anytype,
     err: anyerror,
 ) !bool {
@@ -363,7 +396,7 @@ test "findBestSuggestions: drops candidates needing more than half the input rew
 }
 
 test "not-found plugin structure" {
-    try std.testing.expect(@hasDecl(@This(), "onError"));
+    try std.testing.expect(@hasDecl(@This(), "renderRoutingError"));
 }
 
 test "find best suggestions" {
@@ -489,11 +522,11 @@ fn freeSuggestions(allocator: std.mem.Allocator, suggestions: [][]const u8) void
 }
 
 // ===========================================================================
-// onError: the plugin's 3-case contract (see the module doc comment above)
+// renderRoutingError: the plugin's 3-case contract (see the module doc comment above)
 // ===========================================================================
 
-test "onError case 1: a close typo gets a 'did you mean' suggestion" {
-    // `onError` allocates (joins, suggestion dupes) and, like the production
+test "renderRoutingError case 1: a close typo gets a 'did you mean' suggestion" {
+    // `renderRoutingError` allocates (joins, suggestion dupes) and, like the production
     // registry, relies on an arena being torn down wholesale rather than
     // freeing each piece — so context.allocator is arena-backed here too,
     // not the leak-checking testing.allocator directly.
@@ -519,7 +552,7 @@ test "onError case 1: a close typo gets a 'did you mean' suggestion" {
         .{ .path = &.{"status"}, .description = "Show status" },
     };
 
-    const handled = try onError(&ctx, error.CommandNotFound);
+    const handled = try renderRoutingError(&ctx, error.CommandNotFound);
     try ctx.stderr().flush();
 
     // Case 1 is never "handled" — the error must keep propagating so the
@@ -535,8 +568,8 @@ test "onError case 1: a close typo gets a 'did you mean' suggestion" {
     try std.testing.expect(std.mem.indexOf(u8, out, "--help' to see all available commands") != null);
 }
 
-test "onError case 1: a distant input gets no suggestion, just the command list" {
-    // `onError` allocates (joins, suggestion dupes) and, like the production
+test "renderRoutingError case 1: a distant input gets no suggestion, just the command list" {
+    // `renderRoutingError` allocates (joins, suggestion dupes) and, like the production
     // registry, relies on an arena being torn down wholesale rather than
     // freeing each piece — so context.allocator is arena-backed here too,
     // not the leak-checking testing.allocator directly.
@@ -562,7 +595,7 @@ test "onError case 1: a distant input gets no suggestion, just the command list"
         .{ .path = &.{"status"}, .description = "Show status" },
     };
 
-    const handled = try onError(&ctx, error.CommandNotFound);
+    const handled = try renderRoutingError(&ctx, error.CommandNotFound);
     try ctx.stderr().flush();
 
     try std.testing.expect(!handled);
@@ -574,8 +607,8 @@ test "onError case 1: a distant input gets no suggestion, just the command list"
     try std.testing.expect(std.mem.indexOf(u8, out, "search") != null);
 }
 
-test "onError case 2: a bare known group renders its subcommands and is handled" {
-    // `onError` allocates (joins, suggestion dupes) and, like the production
+test "renderRoutingError case 2: a bare known group renders its subcommands and is handled" {
+    // `renderRoutingError` allocates (joins, suggestion dupes) and, like the production
     // registry, relies on an arena being torn down wholesale rather than
     // freeing each piece — so context.allocator is arena-backed here too,
     // not the leak-checking testing.allocator directly.
@@ -603,7 +636,7 @@ test "onError case 2: a bare known group renders its subcommands and is handled"
         .{ .path = &.{"status"}, .description = "Show status" },
     };
 
-    const handled = try onError(&ctx, error.CommandNotFound);
+    const handled = try renderRoutingError(&ctx, error.CommandNotFound);
     try ctx.stderr().flush();
 
     // Case 2 is handled — the registry must not also print its own group line.
@@ -618,8 +651,8 @@ test "onError case 2: a bare known group renders its subcommands and is handled"
     try std.testing.expect(std.mem.indexOf(u8, out, "Did you mean") == null);
 }
 
-test "onError case 2: a deeply-nested pure group lists its next hop, not an empty section (#452)" {
-    // `onError` allocates (joins, suggestion dupes) and, like the production
+test "renderRoutingError case 2: a deeply-nested pure group lists its next hop, not an empty section (#452)" {
+    // `renderRoutingError` allocates (joins, suggestion dupes) and, like the production
     // registry, relies on an arena being torn down wholesale rather than
     // freeing each piece — so context.allocator is arena-backed here too,
     // not the leak-checking testing.allocator directly.
@@ -651,7 +684,7 @@ test "onError case 2: a deeply-nested pure group lists its next hop, not an empt
         .{ .path = &.{"status"}, .description = "Show status" },
     };
 
-    const handled = try onError(&ctx, error.CommandNotFound);
+    const handled = try renderRoutingError(&ctx, error.CommandNotFound);
     try ctx.stderr().flush();
 
     try std.testing.expect(handled);
@@ -671,8 +704,8 @@ test "onError case 2: a deeply-nested pure group lists its next hop, not an empt
     try std.testing.expect(std.mem.indexOf(u8, out, "release") == null);
 }
 
-test "onError case 3: no command at all renders the top-level list and is handled" {
-    // `onError` allocates (joins, suggestion dupes) and, like the production
+test "renderRoutingError case 3: no command at all renders the top-level list and is handled" {
+    // `renderRoutingError` allocates (joins, suggestion dupes) and, like the production
     // registry, relies on an arena being torn down wholesale rather than
     // freeing each piece — so context.allocator is arena-backed here too,
     // not the leak-checking testing.allocator directly.
@@ -698,7 +731,7 @@ test "onError case 3: no command at all renders the top-level list and is handle
         .{ .path = &.{"status"}, .description = "Show status" },
     };
 
-    const handled = try onError(&ctx, error.CommandNotFound);
+    const handled = try renderRoutingError(&ctx, error.CommandNotFound);
     try ctx.stderr().flush();
 
     // Case 3 is handled — the registry's bare "No command specified" line is
@@ -711,8 +744,8 @@ test "onError case 3: no command at all renders the top-level list and is handle
     try std.testing.expect(std.mem.indexOf(u8, out, "search") != null);
 }
 
-test "onError ignores errors other than CommandNotFound" {
-    // `onError` allocates (joins, suggestion dupes) and, like the production
+test "renderRoutingError ignores errors other than CommandNotFound" {
+    // `renderRoutingError` allocates (joins, suggestion dupes) and, like the production
     // registry, relies on an arena being torn down wholesale rather than
     // freeing each piece — so context.allocator is arena-backed here too,
     // not the leak-checking testing.allocator directly.
@@ -732,15 +765,15 @@ test "onError ignores errors other than CommandNotFound" {
     var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
     defer ctx.deinit();
 
-    const handled = try onError(&ctx, error.OptionUnknown);
+    const handled = try renderRoutingError(&ctx, error.OptionUnknown);
     try ctx.stderr().flush();
 
     try std.testing.expect(!handled);
     try std.testing.expectEqualStrings("", aw.written());
 }
 
-test "onError sanitizes a terminal-escape-laced attempted command" {
-    // `onError` allocates (joins, suggestion dupes) and, like the production
+test "renderRoutingError sanitizes a terminal-escape-laced attempted command" {
+    // `renderRoutingError` allocates (joins, suggestion dupes) and, like the production
     // registry, relies on an arena being torn down wholesale rather than
     // freeing each piece — so context.allocator is arena-backed here too,
     // not the leak-checking testing.allocator directly.
@@ -766,7 +799,7 @@ test "onError sanitizes a terminal-escape-laced attempted command" {
         .{ .path = &.{"search"}, .description = "Search things" },
     };
 
-    _ = try onError(&ctx, error.CommandNotFound);
+    _ = try renderRoutingError(&ctx, error.CommandNotFound);
     try ctx.stderr().flush();
 
     const out = aw.written();
@@ -774,7 +807,7 @@ test "onError sanitizes a terminal-escape-laced attempted command" {
     try std.testing.expect(std.mem.indexOf(u8, out, "]0;pwned") != null); // text survives, minus the escape
 }
 
-test "onError case 1: a huge command path is truncated, not dumped whole" {
+test "renderRoutingError case 1: a huge command path is truncated, not dumped whole" {
     const gpa = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
@@ -799,7 +832,7 @@ test "onError case 1: a huge command path is truncated, not dumped whole" {
         .{ .path = &.{"search"}, .description = "Search things" },
     };
 
-    _ = try onError(&ctx, error.CommandNotFound);
+    _ = try renderRoutingError(&ctx, error.CommandNotFound);
     try ctx.stderr().flush();
 
     const out = aw.written();

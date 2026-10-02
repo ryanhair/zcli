@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Args & options",
-.description = "Type-driven argument and option parsing: struct fields become flags, defaults become optional, required options satisfied from CLI, env, or config, multi-value arrays with comma or repeat syntax, boolean negation, and enum suggestions.",
+.description = "Type-driven argument and option parsing: struct fields become flags, defaults become optional, required options satisfied from CLI, env, or config, literal repeatable arrays with explicit delimiters and opted-in stdin text, boolean negation, and enum suggestions.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -93,7 +93,7 @@ The field's type says how the flag behaves:
 | `env: ?[]const u8 = null` | valued, absent = `null` |
 | `region: []const u8` | **required** — no default means a value must arrive from somewhere |
 | `format: enum { json, text }` | valued, only listed variants accepted |
-| `tag: []const []const u8` | **multi-value** — repeat or comma-separate |
+| `tag: []const []const u8` | **multi-value** — repeat; delimiters are explicit |
 
 Per-field metadata lives in `meta.options`: `.short` for a one-letter flag, `.description` for help, `.name` to override the long flag spelling, `.env` to bind an environment variable, plus [`.validate` and `.requires`]($link.page('docs/validation')) and a [dynamic `.complete` hook]($link.page('docs/completions')) for shell completions.
 
@@ -103,15 +103,29 @@ Every boolean flag gets a generated `--no-<flag>` twin, so users can override a 
 
 ### Multi-value options
 
-An array field accepts multiple values, by repetition or comma-separated — and the two compose:
+Each array-option occurrence contributes one element. Quoted text keeps its commas:
 
 ```sh
-myapp deploy --tag a --tag b     # [a, b]
-myapp deploy --tag a,b           # [a, b]
-myapp deploy --tag a,b --tag c   # [a, b, c]
+myapp card new --ac "Clear on blur, not on change" --ac "Keep focus"
+# ["Clear on blur, not on change", "Keep focus"]
 ```
 
-Element types beyond strings parse too: `[]u32`, `[]f64`, and friends. Greedy space-separated lists (`--tag a b c`) are deliberately not supported — they're ambiguous with interleaved positionals. Empty segments (`--tag a,,b`) are rejected. Help marks these options `(repeatable)`.
+Opt into list shorthand per option when a delimiter is useful:
+
+```zig
+pub const meta = .{ .options = .{
+    .tag = .{ .short = 't', .delimiter = ',' },
+} };
+```
+
+```sh
+myapp deploy --tag a,b --tag c   # ["a", "b", "c"]
+myapp deploy -ta,b              # ["a", "b"]
+```
+
+Element types beyond strings parse too: `[]u32`, `[]f64`, and friends. Delimited values reject empty segments (`a,,b`), do not trim whitespace, and have no CSV quoting or escaping. Literal string options accept an empty element (`--ac=`). Delimiters must be a single non-whitespace, non-NUL byte, declared on an array option. Help distinguishes repeatable options from delimited repeatable options. Structured configuration arrays preserve their boundaries.
+
+Greedy space-separated lists (`--tag a b c`) remain unsupported because they are ambiguous with interleaved positionals.
 
 Nothing caps how many values accumulate or how often a flag repeats — a `docker run --env` or `cc -I` shaped CLI can repeat a flag as many times as the shell allows. Parsing cost is linear in the input and values are borrowed, not copied, so there is nothing to protect against. (The one parsing limit is on the *name*: an option name longer than 256 bytes is rejected before lookup, which bounds the only superlinear step — the "did you mean" scoring.)
 
@@ -123,6 +137,25 @@ An enum option documents itself — help shows `(one of: dev, staging, prod)` �
 $ myapp deploy --env stagin
 Invalid value 'stagin' for option '--env'. Expected one of: dev, staging, prod. Did you mean 'staging'?
 ```
+
+## Reading text from stdin
+
+Declare `.stdin = true` on a scalar `[]const u8` or `?[]const u8` option:
+
+```zig
+pub const Options = struct { goal: ?[]const u8 = null };
+pub const meta = .{ .options = .{ .goal = .{ .stdin = true } } };
+```
+
+```sh
+printf 'hello\n' | myapp card new --goal -
+```
+
+The command receives `"hello\n"` exactly, including the final newline. Empty input is valid. Reading happens after configuration resolution and before content validation or operational preparation. Only the final explicit CLI value `-` triggers a read: `--goal - --goal text` receives `text` without consuming stdin. Defaults, environment, and config values containing `-` stay literal. Options without this declaration also keep `-` literal.
+
+Only one option can request stdin in an invocation. Multiple requests fail before reading. The application can set `stdin_max_bytes` in build/registry configuration; the default is 16 MiB, and content exactly at the limit is accepted. A zero limit accepts only empty input. Help/version do not read stdin.
+
+To provide a literal hyphen to a stdin-enabled option, pipe it: `printf '%s' '-' | myapp --goal -`. Content is never reinterpreted as another source. Use invocation tests for argument parsing and input resolution; direct typed command tests receive ordinary resolved text.
 
 ## Environment variables
 
@@ -140,7 +173,7 @@ pub const meta = .{
 };
 ```
 
-For booleans, the env value accepts `1/true/yes` and `0/false/no` (case-insensitive). For arrays, a single env value is comma-split like a CLI value.
+For booleans, the env value accepts `1/true/yes` and `0/false/no` (case-insensitive). Accumulating arrays do not read an environment fallback; pass repeated CLI values or a structured configuration array.
 
 ## Where values come from
 

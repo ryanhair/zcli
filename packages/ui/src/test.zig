@@ -14,4 +14,5 @@ test {
     _ = @import("render_core.zig");
     _ = @import("hybrid_scrollback.zig");
     _ = @import("scrollback_test.zig");
+    _ = @import("static_table.zig");
 }

@@ -95,6 +95,9 @@ pub const BuildConfig = struct {
     /// Mirrors `GenerateConfig.response_files`; emitted as a literal into the
     /// generated registry's `Config` (#764).
     response_files: bool = false,
+    stdin_max_bytes: usize = 16 * 1024 * 1024,
+    exit_codes: @import("../failure.zig").ExitCodes = .{},
+    failure_policy_module: ?*std.Build.Module = null,
 };
 
 /// The native libraries a plugin's backend needs, expressed as a hook the
@@ -431,6 +434,8 @@ pub const GenerateConfig = struct {
     /// Directory scanned for the consuming project's local plugins (ADR-0006).
     /// Null → no local scan; a missing directory is harmless.
     plugins_dir: ?[]const u8 = null,
+    /// Imports available to commands and plugins discovered under plugins_dir.
+    /// Dependency-provided and built-in plugins keep their own imports.
     shared_modules: ?[]const SharedModule = null,
     command_configs: ?[]const CommandConfig = null,
     /// Expand a leading-`@` argv token as a response file (`myapp @args.txt`),
@@ -449,6 +454,13 @@ pub const GenerateConfig = struct {
     /// The `--` terminator stays the per-invocation escape for a literal `@`
     /// value either way. See `response_file.zig` for the full semantics (#764).
     response_files: bool = false,
+    /// Maximum bytes read when an opted-in text option receives CLI value "-".
+    stdin_max_bytes: usize = 16 * 1024 * 1024,
+    /// Nonzero statuses for usage, unknown commands, and explained command failures.
+    exit_codes: @import("../failure.zig").ExitCodes = .{},
+    /// Application error_codes, describeFailure, and/or renderFailure declarations.
+    /// The module receives a zcli import; see docs/ERROR_HANDLING.md for signatures.
+    failure_policy_module: ?*std.Build.Module = null,
 };
 
 /// Configuration for `addCommandTests()` (the scaffolded-project unit-test

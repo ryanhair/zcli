@@ -31,6 +31,7 @@ also recorded in an append-only `notes.log`.
   both test binaries on the same `test` step as the command tests. Embedded into
   `zcli guide storage`.
 - **A shared module** — `store` and `log` are imported by the commands,
+  also available to project-local plugins (the verbose plugin imports `log`),
   registered once in `build.zig` as `shared_modules` entries and wired into both
   `generate()` and `addCommandTests()`. See `zcli guide sharing`.
 - **The arena** — commands load into `context.allocator` and never free; the

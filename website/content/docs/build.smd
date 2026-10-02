@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Build integration",
-.description = "Wiring zcli in build.zig: zcli.generate and its config, shared modules across commands, per-command unit tests with addCommandTests, and docs generation to markdown, man, and HTML with the docs plugin.",
+.description = "Wiring zcli in build.zig: zcli.generate, application exit policy, shared modules for commands and local plugins, per-command tests, and docs generation.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -42,7 +42,10 @@ The config:
 | `app_description` | required | one-liner shown at the top of `--help` |
 | `plugins` | `&.{}` | explicit plugin list — `zcli.builtin(...)` for shipped plugins, or `.{ .name, .dependency = b.dependency(...) }` for a third-party plugin shipped as its own Zig package |
 | `plugins_dir` | `null` | a folder of your own project-local plugins, auto-discovered |
-| `shared_modules` | `null` | modules importable from every command |
+| `shared_modules` | `null` | modules importable from every command and project-local plugin |
+| `exit_codes` | `.{}` | framework failure statuses: usage 2, unknown command 3, reported command failure 1 by default |
+| `failure_policy_module` | `null` | application-owned descriptions, error-to-status mappings, and optional rendering |
+| `stdin_max_bytes` | `16 * 1024 * 1024` | maximum bytes read for a text option declared with `.stdin = true` |
 
 **There is no version field.** The app version is read from `build.zig.zon`'s `.version` at build time — one source of truth, surfaced as `context.app_version` and `--version`.
 
@@ -66,7 +69,7 @@ const registry = @import("../registry.zig");
 // error: import of file outside module path
 ```
 
-Commands often share code — a storage layer, an API client. Declare it once as a module and every command can import it by name:
+Commands and project-local plugins often share code — a storage layer, an API client. Declare it once as a module and they can import it by name:
 
 ```zig
 const store_module = b.createModule(.{
@@ -85,9 +88,11 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 ```
 
 ```zig
-// in any command:
+// in any command or plugin discovered from plugins_dir:
 const store = @import("store");
 ```
+
+Framework built-ins and plugins supplied by dependencies keep their own import declarations. The `shared_modules` list is wired into plugins discovered from this project's `plugins_dir`.
 
 ## Per-command and shared-module unit tests
 
