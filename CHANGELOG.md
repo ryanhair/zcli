@@ -39,6 +39,8 @@ All notable changes to zcli are documented here.
 
 ### Fixed
 
+- Interactive test expectations recognize output already captured by a previous
+  step, avoiding false timeouts when multiple expected messages arrive together.
 - Invalid array option values and empty delimited segments produce structured
   usage diagnostics and honor the configured usage exit status, without a Zig
   error trace.

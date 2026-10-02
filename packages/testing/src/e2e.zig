@@ -1594,6 +1594,15 @@ fn waitForOutput(
     var temp_buffer: [4096]u8 = undefined;
 
     while (true) {
+        // One terminal read may contain several script expectations. Check
+        // captured output before polling: the child may already have exited,
+        // leaving no subsequent bytes to trigger another match check.
+        if (exact_match) {
+            if (endsWithSettled(output_buffer.items, expected)) return true;
+        } else {
+            if (std.mem.indexOf(u8, output_buffer.items, expected) != null) return true;
+        }
+
         const elapsed = nowMs(io) - start_time;
         if (elapsed > timeout_ms) return false;
 
@@ -1606,12 +1615,6 @@ fn waitForOutput(
 
         if (transcript_buffer) |tb| {
             try transcriptPrint(tb, allocator, "Received: \"{s}\"\n", .{temp_buffer[0..bytes_read]});
-        }
-
-        if (exact_match) {
-            if (endsWithSettled(output_buffer.items, expected)) return true;
-        } else {
-            if (std.mem.indexOf(u8, output_buffer.items, expected) != null) return true;
         }
     }
 }
@@ -2674,5 +2677,32 @@ test "terminal capability detection" {
         pty_manager.autoAdjustWindowSize() catch |err| {
             std.log.info("Auto window size adjustment failed as expected in test: {any}", .{err});
         };
+    }
+}
+
+test "consecutive expectations match tokens coalesced into one terminal read" {
+    const BurstThenEof = struct {
+        reads: usize = 0,
+        fn pollRead(self: *@This(), buffer: []u8, _: i32) usize {
+            self.reads += 1;
+            if (self.reads != 1) return 0;
+            const burst = "EDITOR_UI\r\nDONE\r\n";
+            @memcpy(buffer[0..burst.len], burst);
+            return burst.len;
+        }
+    };
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |exact| {
+        var session: BurstThenEof = .{};
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(allocator);
+        var screen = try vterm.VTerm.init(allocator, 40, 3);
+        defer screen.deinit();
+        try std.testing.expect(try waitForOutput(allocator, std.testing.io, &session, "EDITOR_UI", 10, false, &output, null, &screen));
+        // No further read is needed: the first read already captured DONE.
+        // Exercise both expect and expectExact, including trailing CRLF.
+        try std.testing.expect(try waitForOutput(allocator, std.testing.io, &session, "DONE", 10, exact, &output, null, &screen));
+        try std.testing.expectEqual(@as(usize, 1), session.reads);
+        try std.testing.expect(frameSatisfied(allocator, &screen, .{ .contains = "DONE" }));
     }
 }
