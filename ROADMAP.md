@@ -15,7 +15,7 @@ happens. The invocation and input/output contracts are still settling (§3);
 
 ## 1. Where zcli is today
 
-Current release: **v0.25.0** (Zig 0.16.0, Linux/macOS/Windows).
+Current release: **v0.26.0** (Zig 0.16.0, Linux/macOS/Windows).
 
 The framework is exercised by its own
 meta-CLI (`zcli init/add/mv/rm/tree/dev/guide/release` are all zcli commands) and
@@ -201,7 +201,7 @@ To insulate yourself:
 - **Pin a release tag** with its immutable hash — never track `main` in a project
   you ship:
   ```bash
-  zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.25.0.tar.gz
+  zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.26.0.tar.gz
   ```
   (`main`'s hash changes every commit; that's for trying the development branch,
   not depending on it.)
