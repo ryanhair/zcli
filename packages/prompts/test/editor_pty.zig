@@ -54,3 +54,11 @@ test "interactive immediate prompt skips Enter invitation" {
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Invitation") == null);
 }
+
+test "editor executable also launches with inherited redirected streams" {
+    const result = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ fixture, "inherit" } });
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    try std.testing.expectEqualStrings("EDITOR_UI\nsaved\n", result.stdout);
+}

@@ -106,6 +106,7 @@ pub fn build(b: *std.Build) void {
         check.dependOn(&tests.step);
         check.dependOn(&fixture.step);
         const run = b.addRunArtifact(tests);
+        b.step("test-editor", "Run editor terminal integration tests").dependOn(&run.step);
         test_step.dependOn(&run.step);
         b.top_level_steps.get("test-prompts").?.step.dependOn(&run.step);
     }

@@ -275,13 +275,16 @@ pub fn edit(allocator: std.mem.Allocator, config: EditConfig) !EditResult {
     argv[0] = program;
     argv[command.len] = tmp_name;
     const output = output_terminal orelse input_terminal;
-    var child = std.process.spawn(config.io, .{
-        .argv = argv,
-        .environ_map = config.environ,
-        .stdin = if (input_terminal) |f| .{ .file = f } else .inherit,
-        .stdout = if (output) |f| .{ .file = f } else .inherit,
-        .stderr = if (output) |f| .{ .file = f } else .inherit,
-    }) catch |err| {
+    var child = (if (builtin.os.tag == .windows and input_terminal != null)
+        @import("editor_windows.zig").spawn(temporary, argv, config.environ, input_terminal.?.handle, output.?.handle)
+    else
+        std.process.spawn(config.io, .{
+            .argv = argv,
+            .environ_map = config.environ,
+            .stdin = if (input_terminal) |f| .{ .file = f } else .inherit,
+            .stdout = if (output) |f| .{ .file = f } else .inherit,
+            .stderr = if (output) |f| .{ .file = f } else .inherit,
+        })) catch |err| {
         var failure: EditorFailure = .{ .phase = .launch, .cause = err };
         preserve = preserveScratch(temporary, config, tmp_name);
         if (preserve) failure.recovery_path = tmp_name;
@@ -621,7 +624,8 @@ test "successful save with failed readback preserves recovery file" {
 
 // std.Io's NT path resolver does not support CONIN$/CONOUT$ device names.
 // Open the attached console with Win32 directly, then use ordinary File
-// ownership and SpawnOptions.file so redirects never become editor UI.
+// ownership. The Windows launcher passes these console handles directly to
+// CreateProcessW; Zig 0.16 SpawnOptions.file tries to reopen them as NT files.
 extern "kernel32" fn CreateFileW(
     name: [*:0]const u16,
     access: u32,
@@ -756,4 +760,8 @@ test "nested EDITOR value and empty VISUAL resolve through threaded environment"
     var result = try testEdit(std.testing.allocator, .{ .io = std.testing.io, .environ = &env });
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("edited\n", result.edited);
+}
+
+test {
+    _ = @import("editor_windows.zig");
 }

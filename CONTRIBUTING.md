@@ -28,6 +28,7 @@ From the repo root:
 
 - `zig build test` — the whole battery: every package's suite plus the meta-CLI's and every example's tests
 - `zig build test-<name>` — one subproject (`test-core`, `test-terminal`, `test-prompts`, `test-tasks`, …)
+- `zig build test-editor` — the focused editor terminal tests (PTY/ConPTY), including immediate launch and redirected stdout
 - `zig build fuzz-smoke` — deterministic parser fuzz corpora (also included in `test`)
 - `zig build fuzz --fuzz=50K` — bounded coverage-guided parser fuzzing; omit `=50K` for a sustained local run you stop manually
 - `zig build build-examples` / `build-cli` — compile the examples / the zcli binary
