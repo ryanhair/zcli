@@ -337,3 +337,5 @@ pub const Builtin = zcli_core.Builtin;
 pub const builtin = zcli_core.builtin;
 pub const config = zcli_core.config;
 pub const SharedModule = zcli_core.SharedModule;
+
+pub const setSerdeModule = zcli_core.setSerdeModule;

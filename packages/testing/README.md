@@ -128,3 +128,8 @@ subprocess/snapshot tier (`zcli_testing`) is std-only.
 
 - [`core`](../core/) — `Stdio`, `TestContext` for in-process execution (unit tier only)
 - [`vterm`](../vterm/) — terminal emulation for rendered-output assertions (unit + e2e tiers)
+
+On Linux and macOS, `zig build test` runs the subprocess/PTY suite both with the
+default linkage and with libc linked. `zig build test-libc` runs the latter
+alone. For cross-compilation without executing foreign binaries, use
+`zig build test-compile test-libc-compile -Dtarget=x86_64-linux-gnu`.

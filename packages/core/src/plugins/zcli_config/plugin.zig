@@ -980,6 +980,7 @@ const AllTypes = struct {
     flag: bool = false,
     name: []const u8 = "default",
     color: Color = .red,
+    colors: []const Color = &.{},
     maybe_color: ?Color = null,
     ratio: f64 = 0.0,
     small: u16 = 0,
@@ -998,13 +999,14 @@ test "JSON: full coercion matrix" {
     const content =
         \\{ "flag": true, "name": "x", "color": "green", "maybe_color": "blue",
         \\  "ratio": 1.5, "small": 300, "tiny": -5,
-        \\  "tags": ["a", "b"], "ports": [80, 443] }
+        \\  "tags": ["a", "b"], "ports": [80, 443], "colors": ["red", "blue"] }
     ;
     applyJson(AllTypes, &opts, content, testCtx(allocator), &data, &cmd_path, &provided);
 
     try testing.expect(opts.flag);
     try testing.expectEqualStrings("x", opts.name);
     try testing.expect(opts.color == .green);
+    try testing.expectEqualSlices(Color, &.{ .red, .blue }, opts.colors);
     try testing.expect(opts.maybe_color == .blue);
     try testing.expectEqual(@as(f64, 1.5), opts.ratio);
     try testing.expectEqual(@as(u16, 300), opts.small);
@@ -1026,6 +1028,7 @@ test "TOML: full coercion matrix" {
         \\flag = true
         \\name = "x"
         \\color = "green"
+        \\colors = ["red", "blue"]
         \\maybe_color = "blue"
         \\ratio = 1.5
         \\small = 300
@@ -1038,6 +1041,7 @@ test "TOML: full coercion matrix" {
 
     try testing.expect(opts.flag);
     try testing.expect(opts.color == .green);
+    try testing.expectEqualSlices(Color, &.{ .red, .blue }, opts.colors);
     try testing.expect(opts.maybe_color == .blue);
     try testing.expectEqual(@as(f64, 1.5), opts.ratio);
     try testing.expectEqual(@as(u16, 300), opts.small);
@@ -1057,6 +1061,7 @@ test "YAML: full coercion matrix" {
         \\flag: true
         \\name: x
         \\color: green
+        \\colors: [red, blue]
         \\maybe_color: blue
         \\ratio: 1.5
         \\small: 300
@@ -1073,6 +1078,7 @@ test "YAML: full coercion matrix" {
 
     try testing.expect(opts.flag);
     try testing.expect(opts.color == .green);
+    try testing.expectEqualSlices(Color, &.{ .red, .blue }, opts.colors);
     try testing.expect(opts.maybe_color == .blue);
     try testing.expectEqual(@as(f64, 1.5), opts.ratio);
     try testing.expectEqual(@as(u16, 300), opts.small);

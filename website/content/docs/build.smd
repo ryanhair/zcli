@@ -69,7 +69,9 @@ const registry = @import("../registry.zig");
 // error: import of file outside module path
 ```
 
-Commands and project-local plugins often share code — a storage layer, an API client. Declare it once as a module and they can import it by name:
+An underscore-prefixed file such as `_shared.zig` is only excluded from discovery. It is not automatically a shared module. A relative import belongs to the importing command module, so two commands importing that same helper by file path produce Zig's "file exists in modules" error. Register the helper once and import it by name instead.
+
+Commands often share code — a storage layer, an API client. Declare it once as a module and every command can import it by name:
 
 ```zig
 const store_module = b.createModule(.{
@@ -140,3 +142,26 @@ zcli.builtin(.github_upgrade, .{
 ```
 
 See [Plugins]($link.page('docs/plugins')) for what each provides and [Ship & distribute]($link.page('docs/shipping')) for the upgrade/signing story.
+
+## Sharing the application's serde module
+
+zcli bundles serde v1.2.2 for TOML/YAML config parsing. If your application also
+uses serde, you can select the exact same module for both:
+
+```zig
+const zcli_dep = b.dependency("zcli", .{ .target = target, .optimize = optimize });
+const serde_dep = b.dependency("serde", .{ .target = target, .optimize = optimize });
+zcli.setSerdeModule(zcli_dep, serde_dep.module("serde"));
+exe.root_module.addImport("serde", serde_dep.module("serde"));
+```
+
+Call `setSerdeModule` once after obtaining dependencies, before calling
+`generate` or `addCommandTests`. It configures the dependency's existing zcli
+module, so commands, plugins, and unit tests use that selection too. Omit the
+call to use the bundled module. This is separate from `shared_modules`, which
+makes modules importable by commands.
+
+The supplied module must support the dynamic TOML/YAML API tested with v1.2.2.
+Incompatible modules fail compilation; zcli does not silently fall back. Sharing
+avoids a second serde module in the application graph; the linked binary-size
+impact depends on which functions your application uses.

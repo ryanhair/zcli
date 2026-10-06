@@ -441,3 +441,11 @@ pub const CommandModuleConfig = types.CommandModuleConfig;
 pub const GenerateError = main.GenerateError;
 pub const generate = main.generate;
 pub const addCommandTests = @import("src/build_utils/command_tests.zig").addCommandTests;
+
+/// Use the application's serde module for zcli's TOML/YAML config parsing.
+/// Call once after creating dependencies, before generate/addCommandTests.
+/// The supplied module must provide the serde API tested with v1.2.2; an
+/// incompatible module is a compile error, never a silent bundled fallback.
+pub fn setSerdeModule(zcli_dep: *std.Build.Dependency, serde_module: *std.Build.Module) void {
+    zcli_dep.module("zcli").addImport("serde", serde_module);
+}

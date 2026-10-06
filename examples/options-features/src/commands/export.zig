@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const Duration = @import("deployment").Duration;
 const Context = @import("command_registry").Context;
 
 pub const meta = .{
@@ -10,6 +11,7 @@ pub const meta = .{
         "export --output state.txt --format text",
     },
     .options = .{
+        .timeout = .{ .description = "Export timeout, e.g. 30s / 5m / 1h" },
         .json = .{ .description = "Print as JSON" },
         .yaml = .{ .description = "Print as YAML" },
         .output = .{ .short = 'o', .description = "Write to a file instead of stdout" },
@@ -27,6 +29,7 @@ pub const meta = .{
 pub const Args = struct {};
 
 pub const Options = struct {
+    timeout: ?Duration = null,
     json: bool = false,
     yaml: bool = false,
     output: ?[]const u8 = null,
@@ -35,6 +38,8 @@ pub const Options = struct {
 
 pub fn execute(_: Args, options: Options, context: *Context) !void {
     const stdout = context.stdout();
+
+    if (options.timeout) |timeout| try stdout.print("Export timeout: {d}s\n", .{timeout.seconds});
 
     const style: []const u8 = if (options.json) "json" else if (options.yaml) "yaml" else "text";
 

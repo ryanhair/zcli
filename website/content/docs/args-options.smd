@@ -99,7 +99,7 @@ Per-field metadata lives in `meta.options`: `.short` for a one-letter flag, `.de
 
 ### Boolean negation
 
-Every boolean flag gets a generated `--no-<flag>` twin, so users can override a config-file or env default back to false: `--verbose` / `--no-verbose`. (Naming a field `no_something` is a compile error — it would collide with the generated negation.)
+Every boolean flag gets a generated `--no-<flag>` twin, so users can override a config-file or env default back to false: `--verbose` / `--no-verbose`. This applies to `bool` and `?bool`. The effective flag name cannot start with `no-`, including names set by metadata: declare `open: bool = true` and pass `--no-open`, rather than declaring `no_open`.
 
 ### Multi-value options
 
@@ -123,7 +123,7 @@ myapp deploy --tag a,b --tag c   # ["a", "b", "c"]
 myapp deploy -ta,b              # ["a", "b"]
 ```
 
-Element types beyond strings parse too: `[]u32`, `[]f64`, and friends. Delimited values reject empty segments (`a,,b`), do not trim whitespace, and have no CSV quoting or escaping. Literal string options accept an empty element (`--ac=`). Delimiters must be a single non-whitespace, non-NUL byte, declared on an array option. Help distinguishes repeatable options from delimited repeatable options. Structured configuration arrays preserve their boundaries.
+Element types beyond strings parse too: `[]u32`, `[]f64`, and enum slices such as `color: []const Color = &.{}`. Enum arrays show choices in help and completions, and invalid elements receive the same suggestions as scalar enums. Delimited values reject empty segments (`a,,b`), do not trim whitespace, and have no CSV quoting or escaping. Literal string options accept an empty element (`--ac=`). Delimiters must be a single non-whitespace, non-NUL byte, declared on an array option. Help distinguishes repeatable options from delimited repeatable options. Structured configuration arrays preserve their boundaries.
 
 Greedy space-separated lists (`--tag a b c`) remain unsupported because they are ambiguous with interleaved positionals.
 
@@ -173,7 +173,7 @@ pub const meta = .{
 };
 ```
 
-For booleans, the env value accepts `1/true/yes` and `0/false/no` (case-insensitive). Accumulating arrays do not read an environment fallback; pass repeated CLI values or a structured configuration array.
+For booleans, the env value accepts `1/true/yes` and `0/false/no` (case-insensitive). Array environment values follow the option's `.delimiter` metadata just like CLI values, including enum arrays. Without a delimiter the environment value is one literal element; with a delimiter it is split. If any element is invalid (including empty delimited segments), the entire environment array is ignored. The first CLI occurrence replaces the environment array; subsequent CLI occurrences append. Config remains a fallback when neither source supplies a valid value.
 
 ## Where values come from
 

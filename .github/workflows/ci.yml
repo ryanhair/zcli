@@ -572,6 +572,13 @@ jobs:
           ZCLI_REQUIRE_ZSH: ${{ runner.os != 'Windows' && '1' || '' }}
         run: zig build test
 
+      # The aggregate testing package runs both the default ABI and a libc-linked
+      # subprocess/PTY binary on Linux and macOS, including a non-skipping ioctl
+      # window-size round trip. Exercise application-owned serde wiring too.
+      - name: Consumer-supplied serde
+        working-directory: examples/options-features
+        run: zig build test -Dshared-serde=true
+
   # install.sh and install.ps1 are the `curl | sh` / `irm | iex` trust root, and
   # they carry the only release-signature validation most users ever run — yet
   # no Zig test can reach them (there is no Zig involved). This job IS that

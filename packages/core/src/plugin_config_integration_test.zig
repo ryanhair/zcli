@@ -705,3 +705,38 @@ test "integration: multiple config files warn about ambiguity" {
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }
+
+test "integration: enum array precedence is CLI then env then config" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const Color = enum { red, green, blue };
+    const Opts = struct { color: []const Color = &.{} };
+    const meta = .{ .options = .{ .color = .{ .env = "COLORS", .delimiter = ',' } } };
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "myapp.toml", .data = "color = [\"green\"]\n" });
+    const abs = try tmp.dir.realPathFileAlloc(testing.io, "myapp.toml", alloc);
+    var env = std.process.Environ.Map.init(alloc);
+    var ctx = makeCtx(alloc, &env, &.{}, &discard.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+    try config.loadConfig(&ctx);
+    defer config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+
+    for ([_][]const u8{ "red", "red,invalid" }, 0..) |env_value, i| {
+        try env.put("COLORS", env_value);
+        const parsed = try zcli.parseCommandLine(struct {}, Opts, meta, alloc, &env, &.{}, null);
+        var opts = parsed.options;
+        var applied = [_]bool{false};
+        config.applyConfigDefaults(&ctx, Opts, &opts, &parsed.options_provided, &applied);
+        try testing.expectEqualSlices(Color, if (i == 0) &.{.red} else &.{.green}, opts.color);
+        try testing.expectEqual(i == 1, applied[0]);
+    }
+    try env.put("COLORS", "red");
+    const parsed = try zcli.parseCommandLine(struct {}, Opts, meta, alloc, &env, &.{ "--color", "blue" }, null);
+    var opts = parsed.options;
+    var applied = [_]bool{false};
+    config.applyConfigDefaults(&ctx, Opts, &opts, &parsed.options_provided, &applied);
+    try testing.expectEqualSlices(Color, &.{.blue}, opts.color);
+    try testing.expect(!applied[0]);
+}

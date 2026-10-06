@@ -4,6 +4,16 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
+## Unreleased
+
+### Added
+- Enum array options support repeated flags, opt-in delimited values, and scalar-style diagnostics and suggestions. Help and completions expose their choices.
+- Environment array options respect the same opt-in delimiter metadata as CLI values. Invalid arrays are ignored as a whole; CLI occurrences replace the environment array before accumulating repeated flags.
+- `setSerdeModule` lets applications share their serde module with zcli's config parser; the bundled serde is updated to v1.2.2.
+
+### Fixed
+- The Linux PTY testing harness compiles when libc is linked. The testing suite now exercises both linkage modes with a non-skipping ioctl regression test.
+- Shared command helpers and positive boolean naming are documented, with a compiled example showing one helper module used by two commands.
 ## v0.26.0 — 2026-10-02
 
 ### Breaking

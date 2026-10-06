@@ -5,7 +5,7 @@ that had no example anywhere in the repo:
 
 - **`deploy`** — a required option (`--region`, satisfiable by `--region`,
   `$DEPLOY_REGION`, or config), a multi-value/array option (`--tag`,
-  repeatable), a per-field `validate` hook (`--replicas`, range-checked), and a
+  repeatable), enum arrays (`--zone primary,canary`, also `$DEPLOY_ZONES`), a per-field `validate` hook (`--replicas`, range-checked), and a
   custom `parse` type (`--timeout`, `"30s"`/`"5m"`/`"1h"`).
 - **`export`** — `meta.exclusive` (`--json`/`--yaml` are mutually exclusive)
   and a directional `meta.options.<field>.requires` (`--format` only makes
@@ -29,3 +29,23 @@ text options.
 zig build
 ./zig-out/bin/deployctl --help
 ```
+
+## Shared command helpers
+
+`deploy` and `export` both use the `Duration` parser from
+`src/commands/_deployment.zig`. The underscore excludes it from discovery.
+`build.zig` creates one module named `deployment`, passes it to both `generate`
+and `addCommandTests` through `shared_modules`, and commands import
+`@import("deployment")`. Its own tests run alongside the command tests.
+
+```sh
+zig build test
+zig build test -Dshared-serde=true
+./zig-out/bin/deployctl deploy api --region us-east-1 --zone primary,canary
+./zig-out/bin/deployctl export --timeout 2m
+```
+
+The optional `shared-serde` build setting demonstrates `setSerdeModule`: zcli
+uses the application's serde module for config parsing. A forwarding test module
+counts calls to prove zcli uses the supplied module, even when upstream versions
+match. The default build uses zcli's bundled module.

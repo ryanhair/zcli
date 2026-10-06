@@ -60,6 +60,27 @@ pub fn build(b: *std.Build) void {
     testing_test_mod.addImport("vterm", vterm_dep.module("vterm"));
     const testing_tests = b.addTest(.{ .root_module = testing_test_mod });
     test_step.dependOn(&b.addRunArtifact(testing_tests).step);
+    const compile_step = b.step("test-compile", "Compile subprocess and PTY tests without running");
+    compile_step.dependOn(&testing_tests.step);
+
+    // Linux consumers may link libc even though the PTY tier does not need it.
+    // Compile and run the same subprocess/PTY suite against that ABI too.
+    const libc_compile_step = b.step("test-libc-compile", "Compile libc-linked subprocess and PTY tests without running");
+    const libc_step = b.step("test-libc", "Run subprocess and PTY tests with libc");
+    if (target.result.os.tag == .linux or target.result.os.tag == .macos) {
+        const libc_mod = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        libc_mod.addImport("vterm", vterm_dep.module("vterm"));
+        const libc_tests = b.addTest(.{ .root_module = libc_mod });
+        libc_compile_step.dependOn(&libc_tests.step);
+        const libc_run = b.addRunArtifact(libc_tests);
+        libc_step.dependOn(&libc_run.step);
+        test_step.dependOn(&libc_run.step);
+    }
 
     // Tests for the unit tier (needs zcli/vterm).
     const unit_test_mod = b.addModule("test-unit", .{

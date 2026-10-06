@@ -2083,3 +2083,16 @@ test "global options consumed before command" {
     try testing.expectEqualStrings("myarg", ConsumeCmd.arg1_seen);
     try testing.expect(ConsumeCmd.local_seen);
 }
+
+test "enum array metadata carries choices for help and every completion generator" {
+    const Cmd = struct {
+        pub const Args = struct {};
+        pub const Options = struct { color: []const enum { red, green, blue } = &.{} };
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
+    };
+    const App = Registry.init(.{ .app_name = "array-test", .app_version = "1.0.0", .app_description = "enum arrays" }).register("run", Cmd).build();
+    const info = App.command_info[0].options[0];
+    try testing.expect(info.takes_value);
+    try testing.expectEqual(@as(usize, 3), info.enum_values.?.len);
+    try testing.expectEqualStrings("green", info.enum_values.?[1]);
+}

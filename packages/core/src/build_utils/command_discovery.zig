@@ -120,8 +120,11 @@ fn scanDirectory(
                         continue;
                     }
 
-                    // Underscore-prefixed files are helpers a command file
-                    // imports (e.g. `_wizard.zig`), not commands. Dot-prefixed
+                    // Underscore-prefixed files are excluded from discovery,
+                    // not automatically shared modules. A relative helper import
+                    // belongs to its importing module; helpers used by multiple
+                    // commands must be wired through shared_modules and imported
+                    // by module name. Dot-prefixed
                     // files are hidden (editor swap files, `.DS_Store.zig`,
                     // etc.). Both are skipped silently — same convention as the
                     // directory branch — BEFORE the hard-error name check below,
