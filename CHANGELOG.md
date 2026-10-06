@@ -9,7 +9,9 @@ All notable changes to zcli are documented here.
 ### Added
 - Enum array options support repeated flags, opt-in delimited values, and scalar-style diagnostics and suggestions. Help and completions expose their choices.
 - Environment array options respect the same opt-in delimiter metadata as CLI values. Invalid arrays are ignored as a whole; CLI occurrences replace the environment array before accumulating repeated flags.
-- `setSerdeModule` lets applications share their serde module with zcli's config parser; the bundled serde is updated to v1.2.2.
+
+### Changed
+- Update the pinned serde dependency to v1.2.2 and document Zig's automatic dependency sharing when applications use the same package hash and build arguments.
 
 ### Fixed
 - The Linux PTY testing harness compiles when libc is linked. The testing suite now exercises both linkage modes with a non-skipping ioctl regression test.

@@ -9,10 +9,6 @@
         // doesn't hand-write this — `zcli init` fetches a released zcli:
         //   .zcli = .{ .url = "git+https://github.com/ryanhair/zcli#<tag>", .hash = "..." },
         .zcli = .{ .path = "../.." },
-        .serde = .{
-            .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.2.2.tar.gz",
-            .hash = "serde-1.2.2-1DszTxNsGQB0pwXk4nyJcSPq0_Z2XLXrZY0ISwq5nARW",
-        },
     },
     .paths = .{
         "build.zig",

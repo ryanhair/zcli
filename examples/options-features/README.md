@@ -40,12 +40,6 @@ and `addCommandTests` through `shared_modules`, and commands import
 
 ```sh
 zig build test
-zig build test -Dshared-serde=true
 ./zig-out/bin/deployctl deploy api --region us-east-1 --zone primary,canary
 ./zig-out/bin/deployctl export --timeout 2m
 ```
-
-The optional `shared-serde` build setting demonstrates `setSerdeModule`: zcli
-uses the application's serde module for config parsing. A forwarding test module
-counts calls to prove zcli uses the supplied module, even when upstream versions
-match. The default build uses zcli's bundled module.

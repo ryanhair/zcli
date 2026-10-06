@@ -143,25 +143,25 @@ zcli.builtin(.github_upgrade, .{
 
 See [Plugins]($link.page('docs/plugins')) for what each provides and [Ship & distribute]($link.page('docs/shipping')) for the upgrade/signing story.
 
-## Sharing the application's serde module
+## Using serde in your application
 
-zcli bundles serde v1.2.2 for TOML/YAML config parsing. If your application also
-uses serde, you can select the exact same module for both:
+zcli pins serde v1.2.2 for TOML/YAML config parsing. If your application also
+uses serde, declare its own dependency in `build.zig.zon` and import it normally:
 
 ```zig
 const zcli_dep = b.dependency("zcli", .{ .target = target, .optimize = optimize });
 const serde_dep = b.dependency("serde", .{ .target = target, .optimize = optimize });
-zcli.setSerdeModule(zcli_dep, serde_dep.module("serde"));
+exe.root_module.addImport("zcli", zcli_dep.module("zcli"));
 exe.root_module.addImport("serde", serde_dep.module("serde"));
 ```
 
-Call `setSerdeModule` once after obtaining dependencies, before calling
-`generate` or `addCommandTests`. It configures the dependency's existing zcli
-module, so commands, plugins, and unit tests use that selection too. Omit the
-call to use the bundled module. This is separate from `shared_modules`, which
-makes modules importable by commands.
+Zig automatically reuses the dependency and its exported module when both
+packages resolve to the same package hash and pass identical dependency build
+arguments, including `target` and `optimize`. Matching the version string alone
+is insufficient; use the serde pin in zcli's `packages/core/build.zig.zon` for
+the zcli release you depend on. No zcli-specific sharing API is needed.
 
-The supplied module must support the dynamic TOML/YAML API tested with v1.2.2.
-Incompatible modules fail compilation; zcli does not silently fall back. Sharing
-avoids a second serde module in the application graph; the linked binary-size
-impact depends on which functions your application uses.
+Different package hashes or build arguments create separate dependency
+instances. Your application may use a different serde release; the binary-size
+impact depends on which code each instance uses. This is separate from
+`shared_modules`, which makes modules importable by commands.
