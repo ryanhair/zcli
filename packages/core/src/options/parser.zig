@@ -39,6 +39,7 @@ const resource_limits = @import("../resource_limits.zig");
 /// - `[]i32`, `[]u32`, `[]i64`, `[]u64` - Integer arrays
 /// - `[]i16`, `[]u16`, `[]i8`, `[]u8` - Small integer arrays
 /// - `[]f32`, `[]f64` - Float arrays
+/// - `[]Enum`, `[]const Enum` - Enum arrays
 ///
 /// ## Examples
 /// ```zig
@@ -135,23 +136,26 @@ pub fn parseOptionsWithMeta(
     var result: OptionsType = undefined;
 
     // Track array accumulation for each field
-    var array_lists: [struct_info.fields.len]?array_utils.ArrayListUnion = [_]?array_utils.ArrayListUnion{null} ** struct_info.fields.len;
+    var array_lists: array_utils.ArrayLists(OptionsType) = undefined;
+    inline for (struct_info.fields, 0..) |field, i| {
+        array_lists[i] = if (comptime utils.isArrayType(field.type))
+            array_utils.createArrayList(@typeInfo(field.type).pointer.child)
+        else {};
+    }
     defer {
-        for (&array_lists) |*list| {
-            if (list.*) |*l| {
-                l.deinit(allocator);
+        inline for (struct_info.fields, 0..) |field, i| {
+            if (comptime utils.isArrayType(field.type)) {
+                array_lists[i].deinit(allocator);
             }
         }
     }
 
     // Initialize with default values
-    inline for (struct_info.fields, 0..) |field, i| {
+    inline for (struct_info.fields) |field| {
         if (comptime utils.isArrayType(field.type)) {
             // Initialize array fields with empty arrays of the correct type
             const element_type = @typeInfo(field.type).pointer.child;
             @field(result, field.name) = @as(field.type, &[_]element_type{});
-            // Create ArrayList for accumulation based on element type
-            array_lists[i] = array_utils.createArrayListUnion(element_type);
         } else if (@typeInfo(field.type) == .optional) {
             @field(result, field.name) = null;
         } else if (field.type == bool) {
@@ -191,7 +195,23 @@ pub fn parseOptionsWithMeta(
         inline for (struct_info.fields, 0..) |field, i| {
             if (comptime envNameFor(meta, field.name)) |env_name| {
                 if (env_map.get(env_name)) |env_value| {
-                    if (applyEnvValue(field.type, &@field(result, field.name), env_value)) provided[i] = true;
+                    if (comptime utils.isArrayType(field.type)) {
+                        const T = @typeInfo(field.type).pointer.child;
+                        var candidate = array_utils.createArrayList(T);
+                        defer candidate.deinit(allocator);
+                        const valid = blk: {
+                            array_utils.appendArrayValue(T, allocator, &candidate, env_value, utils.delimiterForField(meta, field.name), env_name, false, null) catch |err| switch (err) {
+                                error.OutOfMemory => return error.SystemOutOfMemory,
+                                else => break :blk false,
+                            };
+                            break :blk true;
+                        };
+                        if (valid) {
+                            array_lists[i] = candidate;
+                            candidate = .empty;
+                            provided[i] = true;
+                        }
+                    } else if (applyEnvValue(field.type, &@field(result, field.name), env_value)) provided[i] = true;
                 }
             }
         }
@@ -270,12 +290,10 @@ pub fn parseOptionsWithMeta(
     }
     inline for (struct_info.fields, 0..) |field, i| {
         if (comptime utils.isArrayType(field.type)) {
-            if (array_lists[i]) |*list_union| {
-                @field(result, field.name) = array_utils.arrayListUnionToOwnedSlice(field.type, allocator, list_union) catch {
-                    return ZcliError.SystemOutOfMemory;
-                };
-                converted[i] = true;
-            }
+            @field(result, field.name) = array_lists[i].toOwnedSlice(allocator) catch {
+                return ZcliError.SystemOutOfMemory;
+            };
+            converted[i] = true;
         }
     }
 
@@ -284,35 +302,6 @@ pub fn parseOptionsWithMeta(
         .result = .{ .next_arg_index = arg_index },
         .provided = provided,
         .stdin_requested = stdin_requested,
-    };
-}
-
-/// Attach a diagnostic only for invalid input; allocation failures retain their
-/// system-error classification. Both option spellings share the same path.
-fn appendArrayValue(
-    comptime ElementType: type,
-    comptime delimiter: ?u8,
-    allocator: std.mem.Allocator,
-    list: *array_utils.ArrayListUnion,
-    value: []const u8,
-    option_name: []const u8,
-    is_short: bool,
-    diag: ?*?ZcliDiagnostic,
-) !void {
-    const appended = if (delimiter) |separator|
-        array_utils.appendDelimitedToArrayListUnion(ElementType, allocator, list, value, option_name, separator)
-    else
-        array_utils.appendToArrayListUnion(ElementType, allocator, list, value, option_name);
-    appended catch |err| {
-        if (err == error.InvalidOptionValue) {
-            if (diag) |d| d.* = .{ .OptionInvalidValue = .{
-                .option_name = option_name,
-                .is_short = is_short,
-                .provided_value = value,
-                .expected_type = diagnostic_errors.expectedTypeName(ElementType),
-            } };
-        }
-        return err;
     };
 }
 
@@ -419,7 +408,8 @@ fn applyEnvValue(comptime T: type, target: *T, env_value: []const u8) bool {
         return true;
     }
 
-    // Unsupported type (accumulating arrays, etc.)
+    // Array fields are handled by the typed accumulators before this helper.
+    // Unsupported scalar type.
     return false;
 }
 
@@ -569,9 +559,9 @@ fn applyLongOption(
             if (comptime utils.isArrayType(field.type)) {
                 // Handle array accumulation
                 const element_type = @typeInfo(field.type).pointer.child;
-                if (array_lists[i]) |*list_union| {
-                    try appendArrayValue(element_type, utils.delimiterForField(meta, field.name), allocator, list_union, value, option_name, false, diag);
-                }
+                const list = &array_lists.*[i];
+                if (count == 0) list.clearRetainingCapacity();
+                try array_utils.appendArrayValue(element_type, allocator, list, value, utils.delimiterForField(meta, field.name), option_name, false, diag);
             } else {
                 stdin_requested[i] = (comptime utils.stdinForField(meta, field.name)) and std.mem.eql(u8, value, "-");
                 // Handle single values
@@ -686,10 +676,10 @@ fn applyShortBundle(
 
                             if (comptime utils.isArrayType(field.type)) {
                                 // For array types, accumulate values
-                                if (array_lists.*[i]) |*list_union| {
-                                    const element_type = @typeInfo(field.type).pointer.child;
-                                    try appendArrayValue(element_type, utils.delimiterForField(meta, field.name), allocator, list_union, value, chars[v.index .. v.index + 1], true, diag);
-                                }
+                                const list = &array_lists.*[i];
+                                const element_type = @typeInfo(field.type).pointer.child;
+                                if (count == 0) list.clearRetainingCapacity();
+                                try array_utils.appendArrayValue(element_type, allocator, list, value, utils.delimiterForField(meta, field.name), chars[v.index .. v.index + 1], true, diag);
                             } else {
                                 stdin_requested[i] = (comptime utils.stdinForField(meta, field.name)) and std.mem.eql(u8, value, "-");
                                 const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
@@ -2066,4 +2056,109 @@ test "array allocation failures have no usage diagnostic" {
         try std.testing.expect(failing.has_induced_failure);
         try std.testing.expect(diag == null);
     }
+}
+
+const ArrayColor = enum(i128) { red = -7, green = 1 << 90, blue = 42 };
+const ArrayTestOptions = struct {
+    color: []const ArrayColor = &.{},
+    numbers: []const i32 = &.{},
+    labels: []const []const u8 = &.{},
+};
+const array_test_meta = .{ .options = .{
+    .color = .{ .short = 'c', .env = "COLORS", .delimiter = ',' },
+    .numbers = .{ .env = "NUMBERS", .delimiter = ',' },
+    .labels = .{ .env = "LABELS", .delimiter = ',' },
+} };
+
+test "enum arrays preserve signed and wide tags, repeats, and short CSV values" {
+    const a = std.testing.allocator;
+    const result = try parseOptionsWithMeta(ArrayTestOptions, array_test_meta, a, null, &.{ "--color", "red", "-cgreen,blue", "--color=red" }, null);
+    defer cleanupOptions(ArrayTestOptions, result.options, a);
+    try std.testing.expectEqualSlices(ArrayColor, &.{ .red, .green, .blue, .red }, result.options.color);
+}
+
+test "enum array diagnostics describe and suggest the failing element" {
+    inline for (.{ @as([]const []const u8, &.{ "--color", "red,gren" }), @as([]const []const u8, &.{ "-c", "gren" }) }, 0..) |args, i| {
+        var diag: ?ZcliDiagnostic = null;
+        try std.testing.expectError(error.OptionInvalidValue, parseOptionsWithMeta(ArrayTestOptions, array_test_meta, std.testing.allocator, null, args, &diag));
+        const d = diag.?.OptionInvalidValue;
+        try std.testing.expectEqualStrings("gren", d.provided_value);
+        try std.testing.expectEqualStrings("one of: red, green, blue", d.expected_type);
+        try std.testing.expectEqualStrings("green", d.suggestion.?);
+        try std.testing.expectEqual(i == 1, d.is_short);
+    }
+}
+
+test "environment arrays parse transactionally and CLI replaces rather than appends" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("COLORS", "red,green");
+    try env.put("NUMBERS", "1,-2");
+    try env.put("LABELS", "alpha,beta");
+    const from_env = try parseOptionsWithMeta(ArrayTestOptions, array_test_meta, a, &env, &.{}, null);
+    defer cleanupOptions(ArrayTestOptions, from_env.options, a);
+    try std.testing.expectEqualSlices(ArrayColor, &.{ .red, .green }, from_env.options.color);
+    try std.testing.expectEqualSlices(i32, &.{ 1, -2 }, from_env.options.numbers);
+    try std.testing.expectEqualStrings("beta", from_env.options.labels[1]);
+    try std.testing.expect(from_env.provided[0]);
+
+    inline for (.{ @as([]const []const u8, &.{ "--color", "blue", "-cred" }), @as([]const []const u8, &.{ "-cblue", "--color=red" }) }) |args| {
+        const cli = try parseOptionsWithMeta(ArrayTestOptions, array_test_meta, a, &env, args, null);
+        defer cleanupOptions(ArrayTestOptions, cli.options, a);
+        try std.testing.expectEqualSlices(ArrayColor, &.{ .blue, .red }, cli.options.color);
+    }
+    for ([_][]const u8{ "red,unknown", "red,", ",red", "red,,green", "" }) |invalid| {
+        try env.put("COLORS", invalid);
+        const ignored = try parseOptionsWithMeta(ArrayTestOptions, array_test_meta, a, &env, &.{}, null);
+        defer cleanupOptions(ArrayTestOptions, ignored.options, a);
+        try std.testing.expectEqual(@as(usize, 0), ignored.options.color.len);
+        try std.testing.expect(!ignored.provided[0]);
+    }
+}
+
+fn arrayAllocationScenario(a: std.mem.Allocator) !void {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("COLORS", "red,green");
+    try env.put("NUMBERS", "1,2,3");
+    const result = parseOptionsWithMeta(ArrayTestOptions, array_test_meta, a, &env, &.{ "--color", "blue", "--labels", "a,b" }, null) catch |err| {
+        if (err == error.SystemOutOfMemory) return error.OutOfMemory;
+        return err;
+    };
+    defer cleanupOptions(ArrayTestOptions, result.options, a);
+    try std.testing.expectEqualSlices(ArrayColor, &.{.blue}, result.options.color);
+}
+
+test "array parsing frees allocations on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, arrayAllocationScenario, .{});
+}
+
+test "independent enum arrays do not mix representations" {
+    const Other = enum(u16) { first = 3, last = 65535, _ };
+    const Opts = struct { color: []const ArrayColor = &.{}, other: []const Other = &.{} };
+    const result = try parseOptions(Opts, std.testing.allocator, &.{ "--other", "last", "--other", "first", "--color", "green", "--color", "red" }, null);
+    defer cleanupOptions(Opts, result.options, std.testing.allocator);
+    try std.testing.expectEqualSlices(Other, &.{ .last, .first }, result.options.other);
+    try std.testing.expectEqualSlices(ArrayColor, &.{ .green, .red }, result.options.color);
+}
+
+test "environment arrays preserve literal boundaries and honor custom delimiters" {
+    const O = struct { literal: []const []const u8 = &.{}, split: []const i32 = &.{} };
+    const meta = .{ .options = .{ .literal = .{ .env = "LITERAL" }, .split = .{ .env = "SPLIT", .delimiter = ';' } } };
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("LITERAL", "a,b");
+    try env.put("SPLIT", "1;-2");
+    const parsed = try parseOptionsWithMeta(O, meta, a, &env, &.{}, null);
+    defer cleanupOptions(O, parsed.options, a);
+    try std.testing.expectEqual(@as(usize, 1), parsed.options.literal.len);
+    try std.testing.expectEqualStrings("a,b", parsed.options.literal[0]);
+    try std.testing.expectEqualSlices(i32, &.{ 1, -2 }, parsed.options.split);
+    try env.put("LITERAL", "");
+    const empty = try parseOptionsWithMeta(O, meta, a, &env, &.{}, null);
+    defer cleanupOptions(O, empty.options, a);
+    try std.testing.expect(empty.provided[0]);
+    try std.testing.expectEqualStrings("", empty.options.literal[0]);
 }

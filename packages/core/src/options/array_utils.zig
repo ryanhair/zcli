@@ -1,160 +1,74 @@
 const std = @import("std");
-const types = @import("types.zig");
 const utils = @import("utils.zig");
+const diagnostics = @import("../diagnostic_errors.zig");
 
-// Union type to handle different ArrayList types for array accumulation
-// Now much cleaner with generic helper functions doing the heavy lifting
-pub const ArrayListUnion = union(enum) {
-    strings: std.ArrayList([]const u8),
-    i32s: std.ArrayList(i32),
-    u32s: std.ArrayList(u32),
-    i16s: std.ArrayList(i16),
-    u16s: std.ArrayList(u16),
-    i8s: std.ArrayList(i8),
-    u8s: std.ArrayList(u8),
-    i64s: std.ArrayList(i64),
-    u64s: std.ArrayList(u64),
-    f32s: std.ArrayList(f32),
-    f64s: std.ArrayList(f64),
+/// One typed accumulator per array field. Scalar slots are void and allocate
+/// nothing; enums retain their actual representation, including signed/wide tags.
+pub fn ArrayLists(comptime Options: type) type {
+    const fields = std.meta.fields(Options);
+    var slots: [fields.len]type = undefined;
+    for (fields, 0..) |field, i| {
+        slots[i] = if (utils.isArrayType(field.type))
+            std.ArrayList(@typeInfo(field.type).pointer.child)
+        else
+            void;
+    }
+    return std.meta.Tuple(&slots);
+}
 
-    pub fn deinit(self: *ArrayListUnion, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            inline else => |*list| list.deinit(allocator),
+pub fn createArrayList(comptime T: type) std.ArrayList(T) {
+    if (@typeInfo(T) != .@"enum") switch (T) {
+        []const u8, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64 => {},
+        else => @compileError("Unsupported array element type: " ++ @typeName(T)),
+    };
+    return .empty;
+}
+
+/// Respect literal boundaries unless a delimiter is declared. Empty segments
+/// are invalid only in delimited input. Allocation failures carry no diagnostic.
+pub fn appendArrayValue(comptime T: type, allocator: std.mem.Allocator, list: *std.ArrayList(T), value: []const u8, delimiter: ?u8, option_name: []const u8, is_short: bool, diag: ?*?diagnostics.ZcliDiagnostic) !void {
+    if (delimiter) |separator| {
+        var it = std.mem.splitScalar(u8, value, separator);
+        while (it.next()) |segment| {
+            try appendElement(T, allocator, list, value, segment, true, option_name, is_short, diag);
         }
-    }
-};
-
-/// Create ArrayListUnion for a given element type
-/// Uses comptime to eliminate repetition and ensure type safety
-pub fn createArrayListUnion(comptime ElementType: type) ArrayListUnion {
-    return switch (ElementType) {
-        []const u8 => .{ .strings = std.ArrayList([]const u8).empty },
-        i32 => .{ .i32s = std.ArrayList(i32).empty },
-        u32 => .{ .u32s = std.ArrayList(u32).empty },
-        i16 => .{ .i16s = std.ArrayList(i16).empty },
-        u16 => .{ .u16s = std.ArrayList(u16).empty },
-        i8 => .{ .i8s = std.ArrayList(i8).empty },
-        u8 => .{ .u8s = std.ArrayList(u8).empty },
-        i64 => .{ .i64s = std.ArrayList(i64).empty },
-        u64 => .{ .u64s = std.ArrayList(u64).empty },
-        f32 => .{ .f32s = std.ArrayList(f32).empty },
-        f64 => .{ .f64s = std.ArrayList(f64).empty },
-        else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
-    };
-}
-
-/// Helper function to get the union field name for a given type
-fn getFieldName(comptime T: type) []const u8 {
-    return switch (T) {
-        []const u8 => "strings",
-        i32 => "i32s",
-        u32 => "u32s",
-        i16 => "i16s",
-        u16 => "u16s",
-        i8 => "i8s",
-        u8 => "u8s",
-        i64 => "i64s",
-        u64 => "u64s",
-        f32 => "f32s",
-        f64 => "f64s",
-        else => @compileError("Unsupported type: " ++ @typeName(T)),
-    };
-}
-
-/// Generic helper to append a value to an ArrayListUnion
-/// Returns errors without writing diagnostics; the parser owns reporting.
-pub fn appendToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, _: []const u8) !void {
-    switch (comptime ElementType) {
-        []const u8 => try list_union.strings.append(allocator, value),
-        inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {
-            const field_name = comptime getFieldName(T);
-            const parsed = try utils.parseOptionValue(T, value);
-            try @field(list_union, field_name).append(allocator, parsed);
-        },
-        else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
+    } else {
+        try appendElement(T, allocator, list, value, value, false, option_name, is_short, diag);
     }
 }
 
-/// Short-option entry point sharing the same value parsing as long options.
-pub fn appendToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8) !void {
-    _ = char;
-    return appendToArrayListUnion(ElementType, allocator, list_union, value, "");
-}
-
-/// Split a single option token on the declared delimiter and append each
-/// element. Array values are literal unless the command opts into this syntax.
-/// An empty segment (`a,,b`, `,a`, `a,`) is rejected as an invalid value.
-/// Delegates to `appendToArrayListUnion` per segment, reusing its per-element
-/// parsing. The caller supplies structured diagnostics for invalid values.
-///
-pub fn appendDelimitedToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8, delimiter: u8) !void {
-    var it = std.mem.splitScalar(u8, value, delimiter);
-    while (it.next()) |segment| {
-        if (segment.len == 0) {
-            return error.InvalidOptionValue;
-        }
-        try appendToArrayListUnion(ElementType, allocator, list_union, segment, option_name);
-    }
-}
-
-/// Delimited append for short options (see `appendDelimitedToArrayListUnion`).
-pub fn appendDelimitedToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8, delimiter: u8) !void {
-    _ = char;
-    return appendDelimitedToArrayListUnion(ElementType, allocator, list_union, value, "", delimiter);
-}
-
-// Compatibility helpers for direct callers. The parser uses the opt-in
-// delimiter metadata and never calls these unconditionally.
-pub fn appendCsvToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
-    return appendDelimitedToArrayListUnion(ElementType, allocator, list_union, value, option_name, ',');
-}
-
-pub fn appendCsvToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8) !void {
-    return appendDelimitedToArrayListUnionShort(ElementType, allocator, list_union, value, char, ',');
-}
-
-/// Generic helper to convert ArrayListUnion to owned slice
-/// Replaces ~15 lines of repetitive switch cases with clean generic code
-pub fn arrayListUnionToOwnedSlice(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion) !ElementType {
-    const ChildType = @typeInfo(ElementType).pointer.child;
-
-    return switch (comptime ChildType) {
-        []const u8 => list_union.strings.toOwnedSlice(allocator),
-        inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {
-            const field_name = comptime getFieldName(T);
-            return @field(list_union, field_name).toOwnedSlice(allocator);
-        },
-        else => @compileError("Unsupported array element type: " ++ @typeName(ChildType)),
+fn appendElement(comptime T: type, allocator: std.mem.Allocator, list: *std.ArrayList(T), value: []const u8, segment: []const u8, delimited: bool, option_name: []const u8, is_short: bool, diag: ?*?diagnostics.ZcliDiagnostic) !void {
+    const parsed = if (delimited and segment.len == 0) error.InvalidOptionValue else utils.parseOptionValue(T, segment);
+    const element = parsed catch |err| {
+        if (diag) |d| d.* = .{ .OptionInvalidValue = .{
+            .option_name = option_name,
+            .is_short = is_short,
+            .provided_value = if (@typeInfo(T) == .@"enum") segment else value,
+            .expected_type = diagnostics.expectedTypeName(T),
+            .suggestion = diagnostics.nearestEnumValue(T, segment),
+        } };
+        return err;
     };
+    try list.append(allocator, element);
+}
+
+fn appendCsv(comptime T: type, allocator: std.mem.Allocator, list: *std.ArrayList(T), value: []const u8, option_name: []const u8, is_short: bool, diag: ?*?diagnostics.ZcliDiagnostic) !void {
+    try appendArrayValue(T, allocator, list, value, ',', option_name, is_short, diag);
 }
 
 // Tests
-test "createArrayListUnion" {
-    // Test string arrays
-    const string_list = createArrayListUnion([]const u8);
-    try std.testing.expect(string_list == .strings);
-
-    // Test integer arrays
-    const i32_list = createArrayListUnion(i32);
-    try std.testing.expect(i32_list == .i32s);
-
-    // Test float arrays
-    const f64_list = createArrayListUnion(f64);
-    try std.testing.expect(f64_list == .f64s);
-}
-
-test "appendToArrayListUnion and arrayListUnionToOwnedSlice" {
+test "typed arrays parse strings and numbers into owned slices" {
     const allocator = std.testing.allocator;
 
     // Test string arrays
     {
-        var list = createArrayListUnion([]const u8);
+        var list = createArrayList([]const u8);
         defer list.deinit(allocator);
 
-        try appendToArrayListUnion([]const u8, allocator, &list, "first", "test");
-        try appendToArrayListUnion([]const u8, allocator, &list, "second", "test");
+        try appendCsv([]const u8, allocator, &list, "first", "test", false, null);
+        try appendCsv([]const u8, allocator, &list, "second", "test", false, null);
 
-        const result = try arrayListUnionToOwnedSlice([][]const u8, allocator, &list);
+        const result = try list.toOwnedSlice(allocator);
         defer allocator.free(result);
 
         try std.testing.expectEqual(@as(usize, 2), result.len);
@@ -164,13 +78,13 @@ test "appendToArrayListUnion and arrayListUnionToOwnedSlice" {
 
     // Test integer arrays
     {
-        var list = createArrayListUnion(i32);
+        var list = createArrayList(i32);
         defer list.deinit(allocator);
 
-        try appendToArrayListUnion(i32, allocator, &list, "42", "numbers");
-        try appendToArrayListUnion(i32, allocator, &list, "-10", "numbers");
+        try appendCsv(i32, allocator, &list, "42", "numbers", false, null);
+        try appendCsv(i32, allocator, &list, "-10", "numbers", false, null);
 
-        const result = try arrayListUnionToOwnedSlice([]i32, allocator, &list);
+        const result = try list.toOwnedSlice(allocator);
         defer allocator.free(result);
 
         try std.testing.expectEqual(@as(usize, 2), result.len);
@@ -180,24 +94,24 @@ test "appendToArrayListUnion and arrayListUnionToOwnedSlice" {
 
     // Test invalid integer should error
     {
-        var list = createArrayListUnion(i32);
+        var list = createArrayList(i32);
         defer list.deinit(allocator);
 
-        try std.testing.expectError(error.InvalidOptionValue, appendToArrayListUnion(i32, allocator, &list, "not_a_number", "test"));
+        try std.testing.expectError(error.InvalidOptionValue, appendCsv(i32, allocator, &list, "not_a_number", "test", false, null));
     }
 }
 
-test "appendToArrayListUnionShort" {
+test "short array values use the same element parser" {
     const allocator = std.testing.allocator;
 
     // Test with short option
-    var list = createArrayListUnion([]const u8);
+    var list = createArrayList([]const u8);
     defer list.deinit(allocator);
 
-    try appendToArrayListUnionShort([]const u8, allocator, &list, "value1", 'f');
-    try appendToArrayListUnionShort([]const u8, allocator, &list, "value2", 'f');
+    try appendCsv([]const u8, allocator, &list, "value1", "f", true, null);
+    try appendCsv([]const u8, allocator, &list, "value2", "f", true, null);
 
-    const result = try arrayListUnionToOwnedSlice([][]const u8, allocator, &list);
+    const result = try list.toOwnedSlice(allocator);
     defer allocator.free(result);
 
     try std.testing.expectEqual(@as(usize, 2), result.len);
@@ -205,16 +119,16 @@ test "appendToArrayListUnionShort" {
     try std.testing.expectEqualStrings("value2", result[1]);
 }
 
-test "appendCsvToArrayListUnion splits on comma and rejects empty segments" {
+test "CSV splits on comma and rejects empty segments" {
     const allocator = std.testing.allocator;
 
     // Strings split into elements.
     {
-        var list = createArrayListUnion([]const u8);
+        var list = createArrayList([]const u8);
         defer list.deinit(allocator);
 
-        try appendCsvToArrayListUnion([]const u8, allocator, &list, "a,b,c", "tags");
-        const result = try arrayListUnionToOwnedSlice([][]const u8, allocator, &list);
+        try appendCsv([]const u8, allocator, &list, "a,b,c", "tags", false, null);
+        const result = try list.toOwnedSlice(allocator);
         defer allocator.free(result);
 
         try std.testing.expectEqual(@as(usize, 3), result.len);
@@ -225,11 +139,11 @@ test "appendCsvToArrayListUnion splits on comma and rejects empty segments" {
 
     // A single value (no comma) yields one element.
     {
-        var list = createArrayListUnion([]const u8);
+        var list = createArrayList([]const u8);
         defer list.deinit(allocator);
 
-        try appendCsvToArrayListUnion([]const u8, allocator, &list, "solo", "tags");
-        const result = try arrayListUnionToOwnedSlice([][]const u8, allocator, &list);
+        try appendCsv([]const u8, allocator, &list, "solo", "tags", false, null);
+        const result = try list.toOwnedSlice(allocator);
         defer allocator.free(result);
 
         try std.testing.expectEqual(@as(usize, 1), result.len);
@@ -238,11 +152,11 @@ test "appendCsvToArrayListUnion splits on comma and rejects empty segments" {
 
     // Numeric elements are parsed per-segment.
     {
-        var list = createArrayListUnion(i32);
+        var list = createArrayList(i32);
         defer list.deinit(allocator);
 
-        try appendCsvToArrayListUnion(i32, allocator, &list, "1,-2,3", "nums");
-        const result = try arrayListUnionToOwnedSlice([]i32, allocator, &list);
+        try appendCsv(i32, allocator, &list, "1,-2,3", "nums", false, null);
+        const result = try list.toOwnedSlice(allocator);
         defer allocator.free(result);
 
         try std.testing.expectEqualSlices(i32, &.{ 1, -2, 3 }, result);
@@ -250,12 +164,12 @@ test "appendCsvToArrayListUnion splits on comma and rejects empty segments" {
 
     // Empty segments (interior, leading, trailing) are rejected.
     {
-        var list = createArrayListUnion([]const u8);
+        var list = createArrayList([]const u8);
         defer list.deinit(allocator);
 
-        try std.testing.expectError(error.InvalidOptionValue, appendCsvToArrayListUnion([]const u8, allocator, &list, "a,,b", "tags"));
-        try std.testing.expectError(error.InvalidOptionValue, appendCsvToArrayListUnionShort([]const u8, allocator, &list, ",a", 't'));
-        try std.testing.expectError(error.InvalidOptionValue, appendCsvToArrayListUnion([]const u8, allocator, &list, "a,", "tags"));
+        try std.testing.expectError(error.InvalidOptionValue, appendCsv([]const u8, allocator, &list, "a,,b", "tags", false, null));
+        try std.testing.expectError(error.InvalidOptionValue, appendCsv([]const u8, allocator, &list, ",a", "f", true, null));
+        try std.testing.expectError(error.InvalidOptionValue, appendCsv([]const u8, allocator, &list, "a,", "tags", false, null));
     }
 }
 

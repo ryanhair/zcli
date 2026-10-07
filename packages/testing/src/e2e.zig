@@ -90,13 +90,13 @@ const TIOCPTYUNLK: u32 = 0x20007452; // macOS: unlock the slave
 const Winsize = posix.winsize;
 
 // ioctl with a usize argument (a pointer via @intFromPtr, or a small integer).
-// system.ioctl's signature differs by OS (Linux: u32 request, usize arg; macOS:
-// c_int request, variadic), so the call is split. Returns whether it succeeded.
+// Raw Linux uses u32 requests; libc uses c_int requests and variadic args.
+// Preserve the request bits when crossing the libc ABI.
 fn doIoctl(fd: posix.fd_t, request: u32, arg: usize) bool {
-    const rc = switch (builtin.os.tag) {
-        .linux => posix.system.ioctl(fd, request, arg),
-        else => posix.system.ioctl(fd, @as(c_int, @bitCast(request)), arg),
-    };
+    const rc = if (builtin.os.tag == .linux and !builtin.link_libc)
+        posix.system.ioctl(fd, request, arg)
+    else
+        posix.system.ioctl(fd, @as(c_int, @bitCast(request)), arg);
     return posix.errno(rc) == .SUCCESS;
 }
 
@@ -2705,4 +2705,17 @@ test "consecutive expectations match tokens coalesced into one terminal read" {
         try std.testing.expectEqual(@as(usize, 1), session.reads);
         try std.testing.expect(frameSatisfied(allocator, &screen, .{ .contains = "DONE" }));
     }
+}
+
+// This deliberately does not skip or fall back to pipes. CI must exercise the
+// ioctl calls, both with the raw Linux syscall ABI and with libc linked.
+test "PTY ioctl ABI creates a real terminal and round trips window size" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+    var pty = try PtyManager.init(std.testing.allocator);
+    defer pty.deinit();
+    try std.testing.expect(pty.slave_name != null);
+    try pty.setWindowSize(31, 97);
+    const size = try pty.getWindowSize();
+    try std.testing.expectEqual(@as(u16, 31), size.row);
+    try std.testing.expectEqual(@as(u16, 97), size.col);
 }

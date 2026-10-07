@@ -216,12 +216,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         pub const command_info = buildCommandInfo();
         pub const global_options_info = buildGlobalOptionsInfo();
 
-        /// Extract the variant names of an enum-typed field (`enum` or `?enum`)
+        /// Extract variant names from scalar, optional, or array enum fields
         /// as a static slice of strings, or `null` for any other type. Shared by
         /// options, args, and global options so completions can offer choices.
         fn enumValuesOf(comptime T: type) ?[]const []const u8 {
             const Bare = switch (@typeInfo(T)) {
                 .optional => |o| o.child,
+                .pointer => |p| if (p.size == .slice and p.child != u8) p.child else T,
                 else => T,
             };
             switch (@typeInfo(Bare)) {

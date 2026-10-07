@@ -1,5 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
+pub const Duration = @import("deployment").Duration;
+const Zone = @import("deployment").Zone;
 const Context = @import("command_registry").Context;
 
 pub const meta = .{
@@ -16,6 +18,7 @@ pub const meta = .{
         .region = .{ .short = 'r', .description = "Target region", .env = "DEPLOY_REGION" },
         .tag = .{ .short = 't', .description = "key=value tag (repeatable)" },
         .replicas = .{ .description = "Number of replicas", .validate = validateReplicas },
+        .zone = .{ .short = 'z', .description = "Deployment zones (repeatable)", .env = "DEPLOY_ZONES", .delimiter = ',' },
         .timeout = .{ .description = "Deploy timeout, e.g. 30s / 5m / 1h" },
     },
 };
@@ -32,6 +35,8 @@ pub const Options = struct {
     // &.{ "a", "b" }.
     tag: []const []const u8 = &.{},
 
+    zone: []const Zone = &.{},
+
     replicas: u32 = 1,
 
     timeout: Duration = .{ .seconds = 30 },
@@ -46,27 +51,6 @@ fn validateReplicas(n: u32) ?[]const u8 {
     return null;
 }
 
-/// A custom `parse` type: any struct/union declaring `pub fn parse(s: []const
-/// u8) !@This()` can be used as an option (or arg) field type, and the CLI,
-/// env, and config sources all funnel through the same parser.
-pub const Duration = struct {
-    seconds: u32,
-
-    pub fn parse(s: []const u8) !Duration {
-        if (s.len < 2) return error.InvalidDuration;
-        const unit = s[s.len - 1];
-        const digits = s[0 .. s.len - 1];
-        const n = try std.fmt.parseInt(u32, digits, 10);
-        const multiplier: u32 = switch (unit) {
-            's' => 1,
-            'm' => 60,
-            'h' => 3600,
-            else => return error.InvalidDuration,
-        };
-        return .{ .seconds = n * multiplier };
-    }
-};
-
 pub fn execute(args: Args, options: Options, context: *Context) !void {
     const stdout = context.stdout();
     try stdout.print("Deploying '{s}' to {s} ({d} replicas, timeout {d}s)\n", .{
@@ -75,19 +59,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         options.replicas,
         options.timeout.seconds,
     });
+    for (options.zone) |zone| try stdout.print("  zone: {s}\n", .{@tagName(zone)});
     for (options.tag) |tag| {
         try stdout.print("  tag: {s}\n", .{tag});
     }
-}
-
-test "Duration.parse: seconds, minutes, hours" {
-    try std.testing.expectEqual(@as(u32, 30), (try Duration.parse("30s")).seconds);
-    try std.testing.expectEqual(@as(u32, 120), (try Duration.parse("2m")).seconds);
-    try std.testing.expectEqual(@as(u32, 3600), (try Duration.parse("1h")).seconds);
-}
-
-test "Duration.parse: rejects an unknown unit" {
-    try std.testing.expectError(error.InvalidDuration, Duration.parse("30x"));
 }
 
 test "validateReplicas: rejects zero and anything over 100" {

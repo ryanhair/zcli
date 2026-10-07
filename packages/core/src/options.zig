@@ -32,13 +32,6 @@ const isNegativeNumber = utils.isNegativeNumber;
 const parseOptionValue = utils.parseOptionValue;
 const dashesToUnderscores = utils.dashesToUnderscores;
 
-// Internal array utilities (used by parsing logic)
-const ArrayListUnion = array_utils.ArrayListUnion;
-const createArrayListUnion = array_utils.createArrayListUnion;
-const appendToArrayListUnion = array_utils.appendToArrayListUnion;
-const appendToArrayListUnionShort = array_utils.appendToArrayListUnionShort;
-const arrayListUnionToOwnedSlice = array_utils.arrayListUnionToOwnedSlice;
-
 // Import tests from sub-modules to include them in the test suite
 test {
     // Import all tests from sub-modules

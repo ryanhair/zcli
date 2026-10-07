@@ -222,6 +222,25 @@ See [the editor API](packages/prompts/README.md#editing-a-document).
 
 Also: `confirm`, `multiSelect`, `number` (range-validated), and `editor` (opens `$EDITOR`). Searchable selection is `p.select(.{ .search = true, ... })` or `p.multiSelect(.{ .search = true, ... })`. Full API in [packages/prompts](packages/prompts/).
 
+## Option conventions
+
+Boolean options (`bool` and `?bool`) automatically accept `--no-<name>`.
+Declare `open: bool = true` and pass `--no-open` to disable it; the effective
+flag name, including a metadata override, cannot start with `no-`, so
+`no_open: bool` is a compile error.
+
+Array options accept repeated flags, including enum arrays such as
+`color: []const Color = &.{}`. Declaring `.delimiter = ','` opts into comma
+splitting for CLI and environment values; otherwise values remain literal.
+CLI values replace the environment array, then repeated flags append. Invalid
+environment arrays are ignored as a whole.
+
+Command files are separate Zig modules. An underscore helper is skipped by
+command discovery; sharing it between commands requires registering it once in
+`shared_modules` and importing it by module name. See the
+[shared helper example](examples/options-features/) and
+[build integration guide](https://zcli.sh/docs/build/).
+
 ## Progress indicators
 
 ```zig

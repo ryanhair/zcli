@@ -69,7 +69,9 @@ const registry = @import("../registry.zig");
 // error: import of file outside module path
 ```
 
-Commands and project-local plugins often share code — a storage layer, an API client. Declare it once as a module and they can import it by name:
+An underscore-prefixed file such as `_shared.zig` is only excluded from discovery. It is not automatically a shared module. A relative import belongs to the importing command module, so two commands importing that same helper by file path produce Zig's "file exists in modules" error. Register the helper once and import it by name instead.
+
+Commands often share code — a storage layer, an API client. Declare it once as a module and every command can import it by name:
 
 ```zig
 const store_module = b.createModule(.{
@@ -140,3 +142,26 @@ zcli.builtin(.github_upgrade, .{
 ```
 
 See [Plugins]($link.page('docs/plugins')) for what each provides and [Ship & distribute]($link.page('docs/shipping')) for the upgrade/signing story.
+
+## Using serde in your application
+
+zcli pins serde v1.2.2 for TOML/YAML config parsing. If your application also
+uses serde, declare its own dependency in `build.zig.zon` and import it normally:
+
+```zig
+const zcli_dep = b.dependency("zcli", .{ .target = target, .optimize = optimize });
+const serde_dep = b.dependency("serde", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("zcli", zcli_dep.module("zcli"));
+exe.root_module.addImport("serde", serde_dep.module("serde"));
+```
+
+Zig automatically reuses the dependency and its exported module when both
+packages resolve to the same package hash and pass identical dependency build
+arguments, including `target` and `optimize`. Matching the version string alone
+is insufficient; use the serde pin in zcli's `packages/core/build.zig.zon` for
+the zcli release you depend on. No zcli-specific sharing API is needed.
+
+Different package hashes or build arguments create separate dependency
+instances. Your application may use a different serde release; the binary-size
+impact depends on which code each instance uses. This is separate from
+`shared_modules`, which makes modules importable by commands.

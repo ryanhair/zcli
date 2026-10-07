@@ -218,7 +218,7 @@ pub const OptionInfo = struct {
     short: ?u8 = null,
     description: ?[]const u8 = null,
     takes_value: bool = false,
-    /// For an enum-typed option, its variant names (the valid choices), else
+    /// For a scalar or array enum option, its variant names (valid choices), else
     /// `null`. Shell completions offer these as the option's argument values.
     enum_values: ?[]const []const u8 = null,
     /// A dynamic/native completion source declared via `meta.options.<field>.complete`
